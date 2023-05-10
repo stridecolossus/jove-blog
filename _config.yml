@@ -1,0 +1,5 @@
+theme: minima
+title: JOVE
+description: A Java implementation of the Vulkan API
+show_downloads: false
+google_analytics:

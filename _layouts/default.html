@@ -1,13 +1,12 @@
 <!DOCTYPE html>
-<html lang="{{ page.lang | default: site.lang | default: "en" }}">
-  {% include head.html %}
-  <body>
-    <main class="page-content" aria-label="Content">
-      <div class="wrapper">
-        {% include header.html %}
-        {{ content }}
-      </div>
-    </main>
-    {% include footer.html %}
-  </body>
+<html lang="{{ page.lang | default: site.lang | default: 'en' }}">
+<body>
+	<main class="page-content" aria-label="Content">
+		<div class="wrapper">
+    		{{ content }}
+		</div>
+	</main>
+	<p><a href="https://github.com/stridecolossus/jove-blog">View on <strong>GitHub</strong></a></p>
+	<p><small>Hosted on GitHub Pages &mdash; using the <a href="https://github.com/jekyll/minima">minima</a> theme</small></p> 
+</body>
 </html>

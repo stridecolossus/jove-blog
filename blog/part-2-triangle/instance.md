@@ -37,7 +37,7 @@ This will require the following components:
 
 * The relevant code generated structures used to specify the requirements of the instance.
 
-As already mentioned in the [code generation](/JOVE/blog/part-1-intro/code-generation) chapter the GLFW library will be used in future chapters to manage windows, input devices, etc. and the tutorial also uses GLFW.  However another compelling reason to use this library is that it integrates neatly with Vulkan, in particular providing a platform-independant mechanism for determining the required extensions for the instance.
+As already mentioned in the [code generation](blog/part-1-intro/code-generation) chapter the GLFW library will be used in future chapters to manage windows, input devices, etc. and the tutorial also uses GLFW.  However another compelling reason to use this library is that it integrates neatly with Vulkan, in particular providing a platform-independant mechanism for determining the required extensions for the instance.
 
 Therefore to create the instance for a given platform we also require:
 

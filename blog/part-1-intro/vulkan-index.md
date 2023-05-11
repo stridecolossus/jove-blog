@@ -7,10 +7,11 @@ This index provides links to the relevant chapter(s) for the various Vulkan obje
 TODO - which one? header or sub-header or both?
 WORK IN PROGRESS
 
-- [Attachment](/JOVE/blog/part-2-triangle/render-pass#attachments)
-- [Command Buffer](/JOVE/blog/part-2-triangle/command-sequence#command-buffers)
-- [Command Pool](/JOVE/blog/part-2-triangle/command-sequence#command-pool)
-- [Diagnostics Handler](/JOVE/blog/part-2-triangle/instance#handler)
+- [Attachment](/blog/part-2-triangle/render-pass#attachments)
+- [Command Buffer](blog/part-2-triangle/command-sequence#command-buffers)
+- [Command Pool](/jove-blog/blog/part-2-triangle/command-sequence#command-pool)
+- [Diagnostics Handler](jove-blog/blog/part-2-triangle/instance#handler)
+
 - [Extensions](/JOVE/blog/part-2-triangle/instance#extensions-and-validation-layers)
 - [Frame Buffer](/JOVE/blog/part-2-triangle/render-pass#frame-buffers)
 - [Image](/JOVE/blog/TODO)

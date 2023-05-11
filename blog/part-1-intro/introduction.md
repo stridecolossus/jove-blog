@@ -31,7 +31,7 @@ This first section sets the scene for the project:
 
 If the reader has no interest in the _why_ and wants to get straight to the _how_ then this introductory section can be skipped.
 
-Inevitably there is usually some _thrashing_ at the start of a new project, especially one employing new and relatively unknown technologies.  In particular there will be a major change of direction in terms of binding to the native Vulkan library, which is the subject of the following chapters in this section.  Again the reader can skip to the [start](/JOVE/blog/part-2-triangle/instance) of the blog proper with the bindings assumed to be in place.
+Inevitably there is usually some _thrashing_ at the start of a new project, especially one employing new and relatively unknown technologies.  In particular there will be a major change of direction in terms of binding to the native Vulkan library, which is the subject of the following chapters in this section.  Again the reader can skip to the [start](blog/part-2-triangle/instance) of the blog proper with the bindings assumed to be in place.
 
 ---
 

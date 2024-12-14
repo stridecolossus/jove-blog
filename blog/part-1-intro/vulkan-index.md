@@ -9,7 +9,7 @@ WORK IN PROGRESS
 
 - [Attachment](/blog/part-2-triangle/render-pass#attachments)
 - [Command Buffer](blog/part-2-triangle/command-sequence#command-buffers)
-- [Command Pool](/jove-blog/blog/part-2-triangle/command-sequence#command-pool)
+- [Command Pool](/jove-blog/blog/part-2-triangle/command-sequence#command-pool) <-- this works!!!
 - [Diagnostics Handler](jove-blog/blog/part-2-triangle/instance#handler)
 
 - [Extensions](/JOVE/blog/part-2-triangle/instance#extensions-and-validation-layers)

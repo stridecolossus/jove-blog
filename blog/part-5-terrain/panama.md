@@ -19,7 +19,7 @@ title: Panama Integration
 
 It has always been the intention at some point to re-implement the Vulkan native layer using the FFM (Foreign Function and Memory) library developed as part of project [Panama](https://openjdk.java.net/projects/panama/).  The reasons for delaying this rework are discussed in [code generation](/jove-blog/blog/part-1-intro/code-generation#alternatives) at the very beginning of the blog.
 
-With the LTS release of JDK 21 the FFM library was elevated to a preview feature (rather than requiring an incubator build) and much more information and tutorials started to appear online, so it high time to replace JNA with the more future proofed (and safer) FFM solution.
+With the LTS release of JDK 21 the FFM library was elevated to a preview feature (rather than requiring an incubator build) and much more information and tutorials started to appear online, so it is high time to replace JNA with the more future proofed (and safer) FFM solution.
 
 A fundamental technical decision that must be addressed immediately is whether to use the `jextract` tool to generate the _bindings_ to the native libraries or to implement a bespoke solution.  To resolve this question the tool is used to generate the Vulkan API and the results are compared and contrasted with a throwaway, hard-crafted application built using FFM from first principles.
 
@@ -121,7 +121,7 @@ for(int n = 0; n < length; ++n) {
 }
 ```
 
-Finally GLFW can be closed (a `void` method without parameters):
+Finally GLFW is closed:
 
 ```java
 MethodHandle glfwTerminate = linker.downcallHandle(
@@ -438,7 +438,7 @@ And finally the method handle is linked to the native library:
 public NativeMethod build() {
     MemoryLayout[] layout = ...
     FunctionDescriptor descriptor = descriptor(returns, layout);
-    MethodHandle handle = linker.downcallHandle(address, descriptor);
+    MethodHandle handle = linker.downcallHandle(descriptor).bindTo(address);
     return new NativeMethod(handle);
 }
 ```

@@ -21,9 +21,7 @@ It has always been the intention at some point to re-implement the Vulkan native
 
 With the LTS release of JDK 21 the FFM library was elevated to a preview feature (rather than requiring an incubator build) and much more information and tutorials started to appear online, so it high time to replace JNA with the more future proofed (and safer) FFM solution.
 
-TODO - note about restricted/unsafe methods and required VM args
-
-A fundamental decision is whether to use the `jextract` tool to generate the Java bindings for the native libraries or to implement a bespoke solution.  To resolve this question we use the tool to generate the Vulkan API and then compare and contrast with a small, hard-crafted application built using FFM from first principles.
+A fundamental technical decision that must be addressed immediately is whether to use the `jextract` tool to generate the _bindings_ to the native libraries or to implement a bespoke solution.  To resolve this question the tool is used to generate the Vulkan API and the results are compared and contrasted with a throwaway, hard-crafted application built using FFM from first principles.
 
 ---
 
@@ -31,22 +29,17 @@ A fundamental decision is whether to use the `jextract` tool to generate the Jav
 
 ### Exploring Panama
 
-The first step in gaining some familiarity with the FFM library is to build a throwaway application that uses a native library, and again GLFW is chosen as the guinea pig.  This API is relatively simple in comparison to Vulkan, which is front-loaded with complexities such as marshalling of structures, by-reference types, callbacks for diagnostic handlers, etc.
+The GLFW library is again used as the guinea-pig since this API is relatively simple in comparison to Vulkan, which is front-loaded with complexities such as marshalling of structures, by-reference types, callbacks for diagnostic handlers, etc.
 
-The new demo application first loads the native library:
+First the native library is loaded using the `SymbolLookup` service:
 
 ```java
 public class DesktopForeignDemo {
-    private final Linker linker = Linker.nativeLinker();
-    private final SymbolLookup lookup;
-
-    void main() throws Exception {
+    void main() {
         try(Arena arena = Arena.ofConfined()) {
-            // Init lookup service
+            Linker linker = Linker.nativeLinker();
             SymbolLookup lookup = SymbolLookup.libraryLookup("glfw3", arena);
             var demo = new DesktopForeignDemo(lookup);
-            
-            // Init GLFW
             ...
         }
     }
@@ -55,80 +48,96 @@ public class DesktopForeignDemo {
 
 The process of invoking a native method using FFM is:
 
-1. Lookup the address of the the method via the `SymbolLookup` service.
+1. Find the off-heap address of the the method via lookup service.
 
 2. Build a `FunctionDescriptor` specifying the signature of the method.
 
-3. Combine both of these to link a `MethodHandle` to the method symbol.
+3. Combine both of these to link a `MethodHandle` to the native method.
 
-4. Invoke the method with an array of the appropriate arguments.
+4. Invoke the handle with an array of the appropriate arguments.
 
-This is wrapped up into a quick-and-dirty helper:
+The GLFW library must first be initialised which returns an integer success code:
 
 ```java
-private Object invoke(String name, Object[] args, MemoryLayout returnType, MemoryLayout... signature) throws Throwable {
-    MemorySegment symbol = lookup.find(name).orElseThrow();
-    var descriptor = returnType == null ? FunctionDescriptor.ofVoid(signature) : FunctionDescriptor.of(returnType, signature);
-    MethodHandle handle = linker.downcallHandle(symbol, descriptor);
-    return handle.invokeWithArguments(args);
-}
+MethodHandle glfwInit = linker.downcallHandle(
+    lookup.find("glfwInit").orElseThrow(),
+    FunctionDescriptor.of(ValueLayout.JAVA_INT)
+);
+println("glfwInit=" + glfwInit.invoke());
 ```
 
-The GLFW library can now be initialised, which in this case returns an integer success code:
+The GLFW version string can now be retrieved:
 
 ```java
-int init = demo.invoke("glfwInit", null, JAVA_INT);
-System.out.println("glfwInit=" + init);
+MethodHandle glfwGetVersionString = linker.downcallHandle(
+    lookup.find("glfwGetVersionString").orElseThrow(),
+    FunctionDescriptor.of(ValueLayout.ADDRESS);
+);
+MemorySegment versionAddress = (MemorySegment) glfwGetVersionString.invoke();
+String version = versionAddress.reinterpret(Integer.MAX_VALUE).getString(0L);
+println("glfwGetVersionString=" + version);
 ```
 
-Vulkan support can be queried:
+Notes:
+
+* The `0L` argument in the `getString` helper is an offset into the off-heap memory.
+
+* The returned address has to be _reinterpreted_ to expand the bounds of the off-heap memory, in this case to an undefined length for a pointer to a null-terminated character array.
+
+Support for Vulkan can also be queried:
 
 ```java
-boolean supported = demo.invoke("glfwVulkanSupported", null, ValueLayout.JAVA_BOOLEAN);
-System.out.println("glfwVulkanSupported=" + supported);
+MethodHandle glfwVulkanSupported = linker.downcallHandle(
+    lookup.find("glfwVulkanSupported").orElseThrow(),
+    FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN);
+);
+println("glfwVulkanSupported=" + glfwVulkanSupported.invoke());
 ```
 
-The GLFW version string can also be retrieved:
+Retrieving the supporting Vulkan extensions is slightly complex since the API method returns a pointer to a string-array and uses a _by reference_ integer to return the size of the array as a side-effect:
 
 ```java
-MemorySegment version = (MemorySegment) demo.invoke("glfwGetVersionString", null, ADDRESS);
-MEmorySegment string = version.reinterpret(Integer.MAX_VALUE).getString(0L);
-System.out.println("glfwGetVersionString=" + string);
+MethodHandle glfwGetRequiredInstanceExtensions = linker.downcallHandle(
+    lookup.find("glfwGetRequiredInstanceExtensions").orElseThrow(),
+    FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS);
+);
+MemorySegment count = arena.allocate(ValueLayout.ADDRESS);
+MemorySegment extensions = (MemorySegment) glfwGetRequiredInstanceExtensions.invoke(count);
 ```
 
-Note that the returned address has to be _reinterpreted_ to expand the bounds of the off-heap memory, in this case with an undefined length for a pointer to a null-terminated character array.
-
-Retrieving the supporting Vulkan extensions is also slightly complex since the API method returns a pointer to a string-array and uses a _by reference_ integer to return the size of the array as a side-effect.  The array length parameter has a `ValueLayout.JAVA_INT` memory layout:
+The length of the array is extracted from the by-reference argument to resize the off-heap memory:
 
 ```java
-MemorySegment count = arena.allocate(JAVA_INT);
+int length = count.get(ValueLayout.JAVA_INT, 0L);
+MemorySegment array = extensions.reinterpret(length * ValueLayout.ADDRESS.byteSize());
 ```
 
-Invoking the extensions method returns the array pointer and the length of the array can then be extracted from the reference:
+And each element is extracted and transformed to a Java string:
 
 ```java
-MemorySegment extensions = (MemorySegment) demo.invoke("glfwGetRequiredInstanceExtensions", new Object[]{count}, ADDRESS, ADDRESS);
-int length = count.get(JAVA_INT, 0L);
-System.out.println("glfwGetRequiredInstanceExtensions=" + length);
-```
-
-The returned pointer is reinterpreted as an array and each element is extracted and transformed to a Java string:
-
-```java
-MemorySegment array = extensions.reinterpret(length * ADDRESS.byteSize());
 for(int n = 0; n < length; ++n) {
     MemorySegment e = array.getAtIndex(ADDRESS, n);
-    System.out.println("  " + e.reinterpret(Integer.MAX_VALUE).getString(0L));
+    println("extension=" + e.reinterpret(Integer.MAX_VALUE).getString(0L));
 }
 ```
 
-Finally GLFW can be closed:
+Finally GLFW can be closed (a `void` method without parameters):
 
 ```java
-demo.invoke("glfwTerminate", null, null);
+MethodHandle glfwTerminate = linker.downcallHandle(
+    lookup.find("glfwTerminate").orElseThrow(),
+    FunctionDescriptor.ofVoid()
+);
+glfwTerminate.invoke();
 ```
 
-Note that the `0L` argument in the various getter methods is an offset into the off-heap memory.
+Note that `reinterpret` is an unsafe operation that can result in a JVM crash for an out-of-bounds array or string length, since the actual size off the off-heap cannot be guaranteed by the JVM.
+
+Additionally this method is _restricted_ and will generate a runtime warning, which can be suppressed with the following VM argument:
+
+```
+--enable-native-access=ALL-UNNAMED
+```
 
 ### Analysis
 
@@ -136,7 +145,7 @@ Generating the FFM bindings using `jextract` is relatively trivial and takes a c
 
 `jextract --source \VulkanSDK\1.2.154.1\Include\vulkan\vulkan.h`
 
-With some experience of using FFM and the generated Vulkan API, we can attempt to extrapolate how JOVE could be refactored and make some observations.
+With some experience of the FFM library and the generated Vulkan bindings, we can attempt to extrapolate how JOVE could be refactored and make some observations.
 
 The advantages of `jextract` are obvious:
 
@@ -150,13 +159,13 @@ However there are disadvantages:
 
 * API methods and structures can only be defined in terms of FFM types or primitives (resulting in poor type safety and loss of meaning).
 
-* In particular enumerations are implemented as static integer accessors (!) with all the concerns that led us to abandon LWJGL in the first place.
+* In particular enumerations are implemented as static integer accessors (WTF!) 
 
 * Implies throwing away the existing code generated enumerations and structures.
 
 Alternatively an abstraction layer based on the existing hand-crafted API and code-generated classes would have the following advantages:
 
-* The native API and structures can be expressed in domain terms.
+* The native API and structures are expressed in domain terms.
 
 * Proper enumerations.
 
@@ -164,129 +173,87 @@ Alternatively an abstraction layer based on the existing hand-crafted API and co
 
 On the other hand:
 
-* Substantial development effect to implement a custom framework that abstracts over the underlying FFM bindings.
+* Substantial development effect.
 
 * Proprietary solution with the potential for unknown problems further down the line.
 
-* An FFM memory layout needs to be generated for _all_ structures.
+* The FFM memory layout needs to be generated for _all_ structures.
 
-Despite the advantages of `jextract` the hybrid solution is preferred for the reasons given above, in particular type safety and self-documenting code.
-In any case the application and/or JOVE would _still_ need to transform domain types to/from the FFM equivalents even if `jextract` was used to generate the API.
+Despite the advantages of `jextract` the hybrid solution is clearly preferable - the ugly bindings, lack of type safety, etc. were the very concerns that led us to abandon LWJGL in the first place.
+
+> In any case the application and/or JOVE would _still_ need to transform domain types to/from the FFM equivalents even if `jextract` was used to generate the API.
 
 The source code generated by `jextract` will be retained as it will be a useful resource during development, particularly for the memory layout of structures.
 
 ### Requirements
 
-With this decision made (for better or worse) the requirements for the new framework can be determined.
+With this decision made (for better or worse) the requirements for the new framework can be determined:
 
-Firstly, the framework will need to support the following types:
+* A factory mechanism that generates an FFM-based implementation of a native library, based on the existing GLFW and Vulkan API definitions.  The API should be expressed in _domain_ terms to avoid the type-safety and self-documenting concerns outlined above.
+
+* A _marshalling_ framework that transforms supported Java types to/from the FFM equivalents.
+
+* Support for by-reference parameters.
+
+* Support for callbacks for GLFW device polling and the Vulkan diagnostics handler.
+
+* Refactoring of the code generator to build the FFM memory layout for all structures and remove the JNA artifacts (imports and the `@FieldOrder` annotation).
+
+The marshalling framework will need to support the following types:
 
 * primitives
 
-* domain types, i.e. reference types such as `Handle` or subclasses of `NativeObject`
+* strings
 
 * structures
 
-* `String`
+* domain types, i.e. reference types such as `Handle` or subclasses of `NativeObject`
 
 * integer enumerations and bitfields
 
-* by-reference integers and pointers
+Which are used in the following use-cases:
 
-* arrays of these supported types
+* parameter
 
-Analysis of the existing GLFW and Vulkan APIs identifies the following use-cases where these types are marshalled to/from the native layer:
+* return value
 
-1. Atomic method parameter, e.g. `vkDestroyInstance(Instance instance ...)`
+* array parameter
 
-2. Method return value, e.g. `boolean glfwVulkanSupported()`
+* structure field
 
-3. Array parameter with a supported component type, e.g. `vkResetFences(... Fence[] pFences)`
+* parameter returned by reference (sometimes referred to as an _in/out_ parameter)
 
-4. Method parameter returned by-reference, e.g. `vkGetPhysicalDeviceProperties(... VkPhysicalDeviceProperties props)`
+* array elements returned by reference
 
-5. Array parameter with elements returned by-reference, e.g. `vkEnumeratePhysicalDevices(... Handle[] devices)`
-
-6. Structure fields.
-
-TREAT BY-REF AS SPECIAL CASE, SIMPLER...
-
-These requirements form a matrix illustrated in the following table:
+These requirements form a matrix that can be illustrated as a table:
 
 | type              | parameter | return value  | array     | by reference  | array by reference    | structure field   |
 | ----              | --------- | ------------  | -----     | ------------  | ------------------    | ---------------   |
-| primitive         | yes       | yes           | yes       | no            | ?                     | yes               |
-| domain            | yes       | depends       | yes       | no            | yes                   | yes               |
+| primitive         | yes       | yes           | yes       | integer only  | ?                     | yes               |
+| string            | yes       | yes           | yes       | no            | ?                     | yes               |
 | structure         | yes       | yes           | yes       | yes           | yes                   | yes               |
-| String            | yes       | yes           | yes       | no            | ?                     | yes               |
-| enumerations      | yes       | yes           | ?         | no            | ?                     | yes               |
-| by-reference      | yes       | no            | no        | n/a           | no                    | no                |
-| array             | yes       | special       | n/a       | yes           | n/a                   | yes               |
+| domain            | yes       | yes (usually) | yes       | pointers only | yes                   | yes               |
+| enumerations      | yes       | yes           | ?         | ?             | ?                     | yes               |
 
-Entries marked as ? are either out-of-scope or unclear at the present moment.
+Entries marked as ? are either out-of-scope or unclear at this point.
 
-MERGE WITH BELOW OBSERVATIONS
+From the above we can make the following observations:
 
-If one excludes the various by-reference use-cases momentarily then the requirements are fairly straight forward with a couple of edge cases:
+1. For the moment at least it seems logical to continue to treat by-reference integers and pointers as special cases.  They are already integral to JOVE (based on the existing JNA equivalents) and there is no Java analog for an by-reference integer in particular.
 
-* A native method cannot return an array since native
+2. A structure is the only type that can be returned by-reference as a __single__ parameter.
 
-* Not all domain types can logically be _returned_ by a native method, e.g. the logical device.
+3. The other by-reference use-cases imply some form of post-processing to 'copy' the off-heap memory into the structure or array.
 
-by-ref
+4. GLFW makes heavy use of callbacks for device polling which will require substantial factoring to use FFM upcall stubs.
 
-NativeObject special case
-by-reference int/ptr special case
-
-(sometimes referred to as _in-out_ parameters)
-
-Where:
-
-* _type_ is a Java or JOVE domain type.
-
-* _layout_ is the corresponding FFM memory layout.
-
-* _memory layout_ specifies the structure of the off-heap memory pointed to by the address (if any).
-
-* _return_ indicates whether the native type can logically be returned from a native method.
-
-* and _by reference_ indicates method parameters that can be returned by the native layer as a by-reference side effect (see below).
-
-From the above the following observations can be made:
-
-1. The supported types are a mixture of primitives, built-in Java types (strings, arrays) and JOVE types.  Converting between these types and the corresponding FFM equivalents will be the responsibility of a _native transformer_ implemented as a _companion_ class for each supported type.
-
-2. Integer and pointer by-reference types will continue to be treated as special cases since these are already integral to JOVE (based on the existing JNA equivalents) and in particular there is no Java analog for an integer-by-reference.
-
-3. Supported reference types (indicated by `address` in the above table) require an FFM pointer to off-heap memory, which needs to be allocated at some point.  Ideally this will be handled by the framework with memory being allocated on-demand by the transformer.  This also nicely allows supported types to be instantiated _without_ a dependency on an `Arena` (which would be annoying).
-
-4. Structures will require a `StructLayout` derived from its fields (which will also need to be code-generated).
-
-5. Structures and arrays are compound types that will require 'recursive' transformation to/from FFM.
-
-6. An array can be returned from some native methods, e.g. `glfwGetRequiredInstanceExtensions`.  This is problematic since the _length_ of the returned array is unknown and therefore cannot be modelled as a Java array.  Generally the length is returned as a by-reference integer in the same API method.  The new framework will disallow arrays as a return type and provide a custom workaround.  Note that returned arrays are only used by the GLFW library.
-
-7. GLFW makes heavy use of callbacks for device polling which will require substantial factoring to FFM upcall stubs.
-
-8. Finally there are a couple of edge-cases for by-reference parameters:
-
-* A structure parameter can be returned by-reference from a native method, e.g. `vkGetPhysicalDeviceProperties`.  The application is responsible for allocating a pointer to off-heap memory for the structure which is _populated_ by the native layer.  The framework then constructs a new structure instance from the returned data _after_ invocation.
-
-* Similarly for a by-reference array parameter, e.g. `vkEnumeratePhysicalDevices` returns an array of device handles.  The application creates an empty array sized accordingly beforehand (generally via the _two stage invocation_ mechanism), allocates off-heap memory for the array, and unmarshals the elements after the method call.  Note that the memory must be a contiguous block in this case.
-
-The problem here is that one cannot determine whether a parameter is being passed _by value_ or _by reference_ solely from the method signature.  JNA used the rather cumbersome `ByReference` marker interface, which generally required _every_ structure to have _two_ implementations to support both cases.  The most obvious solution is to implement a custom annotation to explicitly declare by-reference parameters and switch behaviour accordingly.
-
-Note that the notion of transformers to map domain objects to/from FFM method arguments is already sort of provided by Panama.  Native methods are implemented as _method handles_ which support mutation of the arguments and the return value.  The original intention was to make use of this functionality, unfortunately it proved very difficult in practice for all but the most trivial cases (most examples do not get any further than simple static adapters, probably for this reason).  However this is probably an option to revisit when the refactored code (and our understanding) is more mature.
-
-### Design
-
-MERGE WITH ABOVE
+5. The `glfwGetRequiredInstanceExtensions` method is an edge-case (for reasons detailed later) and is also the only method in either library that returns an array, therefore this requirement is deferred for the moment and the Vulkan extensions are temporarily hard-coded.
 
 From the above the required components for the new framework are:
 
 * A _native library builder_ responsible for constructing the FFM implementation of a native API expressed in _domain_ terms.
 
-* A set of _transformers_ for the supported types identified above, which are responsible for allocation of off-heap memory and converting to/from the equivalent FFM representation.
+* A set of _transformers_ for the supported types which are responsible for allocation of off-heap memory and marshalling to/from the equivalent FFM representation.
 
 * A _native method_ class that composes an FFM method handle and the transformers for its parameters and optional return type.
 
@@ -298,25 +265,19 @@ From the above the required components for the new framework are:
 
 ### Approach
 
-Integration of the new framework into JOVE will require the following changes:
+Integration of the new framework into JOVE entails the following changes:
 
 * Removal of the JNA library.
 
 * Implementation of the new framework components outlined above.
 
-* Implementation of transformers for the basic supporting types: strings, enumerations, integer/pointer by-reference.
+* Implementation of transformers for the supported types.
 
-* Implementation of transformers for types required to support GLFW and Vulkan: structures, `Handle`, arrays, etc.
-
-* A global find-and-replace to Refactor of the GLFW and Vulkan APIs in terms of the new framework.
-
-* Support for callbacks to support GLFW devices polling and the Vulkan diagnostics handler.
-
-* Regeneration of the Vulkan structures to remove JNA artifacts (imports and the `@FieldOrder` annotation).
+* A global find-and-replace to refactor the GLFW and Vulkan APIs in terms of the new framework.
 
 A 'big bang' approach always feels inherently risky simply due to the shear scale of the changes to be made.  Therefore the plan is to create a throwaway prototype targeted at a cut-down API (again using GLFW to begin with) such that we can focus on the development of the new framework without getting bogged down in compilation issues.  Once this is up and running _then_ we will integrate the code into JOVE and iteratively reintroduce each component refactoring accordingly.
 
-As already noted, Vulkan is very front-loaded with complexity, so additional framework support will be addressed as we progress.  Once we are confident that the bulk of the challenges facing the new framework have been addressed, the prototype will be discarded and refactoring can continue with the existing suite of demo applications.
+As already noted, Vulkan is very front-loaded with complexity, so framework support will be implemented as we progress.  Once we are confident that the bulk of the challenges facing the new framework have been addressed, the prototype will be discarded and refactoring can continue with the existing suite of demo applications.
 
 ---
 
@@ -612,10 +573,8 @@ After some further analysis of the required types to be supported by the framewo
 
 The new argument transformer is modelled on the above:
 
-TODO - sealed
-
 ```java
-public interface Transformer {
+public sealed interface Transformer permits IdentityTransformer, AddressTransformer {
     /**
      * @return Native memory layout
      */
@@ -681,7 +640,7 @@ return switch(returns) {
 };
 ```
 
-### Reference Types
+### Address Transformer
 
 The _address transformer_ will be an extension point for the framework supporting both built-in and custom types reference types:
 
@@ -845,69 +804,87 @@ public interface NativeObject {
 
 ### Native Reference
 
-The final framework component required for the basic GLFW prototype is support for by-reference integers and pointers.
+The final framework component required for the basic GLFW prototype is support for the commonly used by-reference types (integer and pointer), which we continue to handle as a special case.
 
-For the moment the following new type implements these relatively simple 'atomic' by-reference types:
-
-```java
-public abstract class NativeReference<T> {
-    private MemorySegment pointer = MemorySegment.NULL;
-
-    protected MemorySegment pointer(SegmentAllocator allocator) {
-        if(MemorySegment.NULL.equals(pointer)) {
-            pointer = allocator.allocate(ValueLayout.ADDRESS);
-        }
-
-        return pointer;
-    }
-
-    /**
-     * @return Referenced value
-     */
-    public abstract T get();
-}
-```
-
-The `pointer` method allocates the underlying address on demand, which is invoked by the companion transformer:
+The following new type encapsulates the off-heap pointer and returned value:
 
 ```java
-public static class NativeAddressTransformer implements AddressTransformer<NativeReference, MemorySegment> {
-    public Object marshal(NativeReference ref, SegmentAllocator allocator) {
-        return ref.pointer(allocator);
-    }
+public class NativeReference<T> {
+    private final VarHandle handle;
+    private MemorySegment pointer;
+    private T value;
 
-    public NativeReference unmarshal(MemorySegment address) {
-        throw new UnsupportedOperationException();
+    public T get() {
+        ...
     }
 }
 ```
 
-New by-reference integer instances are created by the refactored factory:
+The accessor _unmarshals_ the off-heap value from the pointer:
 
 ```java
+public T get() {
+    if(Objects.nonNull(pointer)) {
+        value = unmarshal(handle.get(pointer, 0L));
+    }
+
+    return value;
+}
+```
+
+Where `unmarshal` is a simple pass-through for the case of primitive references:
+
+```java
+protected T unmarshal(Object arg) {
+    return (T) arg;
+}
+```
+
+The companion transformer plugs the new type into the framework:
+
+```java
+public static final class NativeReferenceTransformer implements Transformer {
+    public MemoryLayout layout() {
+        return ADDRESS;
+    }
+
+    public MemorySegment marshal(NativeReference<?> ref, SegmentAllocator allocator) {
+        return ref.allocate(allocator);
+    }
+}
+```
+
+Where the pointer is allocated on-demand:
+
+```java
+private MemorySegment allocate(SegmentAllocator allocator) {
+    if(pointer == null) {
+        pointer = allocator.allocate(ValueLayout.ADDRESS);
+    }
+
+    return pointer;
+}
+```
+
+Finally the existing factory class is updated to create commonly used by-reference variables:
+
+```
 public static class Factory {
-    /**
-     * @return New integer-by-reference
-     */
     public NativeReference<Integer> integer() {
-        return new NativeReference<>() {
-            @Override
-            public Integer get() {
-                return super.pointer.get(ValueLayout.JAVA_INT, 0L);
-            }
-        };
+        var ref = new NativeReference<Integer>(JAVA_INT);
+        ref.set(0);
+        return ref;
     }
 }
 ```
 
-And similarly for by-reference pointers which return an immutable `Handle` instance:
+A by-reference handle has some additional logic to check for an empty result:
 
 ```java
 public NativeReference<Handle> pointer() {
-    return new NativeReference<>() {
-        @Override
-        public Handle get() {
-            MemorySegment address = super.pointer.get(ValueLayout.ADDRESS, 0L);
+    return new NativeReference<>(ADDRESS) {
+        public Handle unmarshal(Object arg) {
+            MemorySegment address = (MemorySegment) arg;
             if(MemorySegment.NULL.equals(address)) {
                 return null;
             }
@@ -919,15 +896,15 @@ public NativeReference<Handle> pointer() {
 }
 ```
 
-This implementation is basically an analog of the equivalent JNA classes (e.g. `IntByReference`) and nicely requires minimal refactoring of the existing JOVE code.
+This implementation is basically a replacement for the equivalent JNA classes and nicely requires minimal refactoring of the existing JOVE code.
 
-> It is not yet clear how much overlap there will be (if any) between the relatively simple atomic by-reference parameters and the more complicated use-cases (structures, arrays, etc).  These new classes may eventually be superceded by a transformer _archetype_ for all by-reference types.  In particular it seems a bit daft to have to implement but disallow the `unmarshal` method.
+> It is not yet clear how much overlap there will be (if any) between these relatively simple by-reference parameters and the more complicated use-cases (structures, arrays, etc).
 
-Most of the GLFW library is now supported by the new framework other than the following:
-
-* The `glfwGetRequiredInstanceExtensions` method is somewhat of an edge case since it returns a string-array (the only method is either library that returns an array).
+The GLFW library is now fully supported by the new framework other than the following (deferred until later):
 
 * Callback support for GLFW devices.
+
+* The `glfwGetRequiredInstanceExtensions` edge case.
 
 ### Integration
 
@@ -1156,16 +1133,17 @@ This is equivalent to the `Desktop` class for the GLFW implementation and replac
 
 #### Empty Values
 
-The framework now supports reference types that can be `null` for an unused or empty value, which FFM represents with the `MemorySegment.NULL` constant.  Therefore an `empty` value is added  to the definition of a transformer:
+The framework now supports reference types that can be `null` for an unused or empty value, which FFM represents with the `MemorySegment.NULL` constant.  An `empty` value is added to the definition of an address transformer:
 
 ```java
-public non-sealed interface AddressTransformer {
+interface AddressTransformer {
     default Object empty() {
         return MemorySegment.NULL;
     }
+}
 ```
 
-Since we anticipate that marshalling will be invoked from other parts of the framework a helper is introduced that handles empty values in one location:
+Since it is anticipated that marshalling will be invoked from other parts of the framework a helper is introduced that handles empty values in one location:
 
 ```java
 class TransformerHelper {
@@ -1571,7 +1549,7 @@ private VkDebugUtilsMessengerCreateInfoEXT populate(MemorySegment callback) {
 }
 ```
 
-A similar approach will be used when GLFW device listeners are reintroduced.
+A similar approach will be used when GLFW device listeners are reintroduced later.
 
 #### Diagnostic Report
 
@@ -1713,7 +1691,13 @@ Diagnostic handlers can now be attached to the instance as before, which is very
 
 ### Returned Annotation
 
-The next Vulkan component after the instance is the physical device which uses native methods that are highly dependant on by-reference parameters.  These pose a problem because by-reference or general parameters cannot be distinguished solely from the method signature.  JNA used the rather cumbersome `ByReference` marker interface, which generally required _every_ structure to have _two_ implementations to support both cases.  The most obvious solution is to implement a custom annotation to explicitly declare by-reference parameters and switch behaviour accordingly:
+The next Vulkan component after the instance is the physical device which uses native methods that are highly dependant on by-reference parameters.  These pose a problem because by-reference and 'normal' parameters cannot be distinguished solely from the method signature.
+
+JNA used the rather cumbersome `ByReference` interface which generally required _every_ structure to have _two_ implementations.  Additionally _every_ array is essentially a by-reference parameter as far as JNA was concerned, whereas we would prefer to separate the normal and by-reference cases.
+
+A generic wrapper type could be introduced that would allow the framework to switch behaviour accordingly.  However the actual type of the reference would then only be known at runtime, meaning the framework would be unable to build and validate a transformer when the library is created.  The most obvious solution is to implement a custom annotation to explicitly declare by-reference parameters and still have access to the actual reference type.
+
+The annotation is a simple _marker_ interface with no declared functionality:
 
 ```java
 @Retention(RetentionPolicy.RUNTIME)
@@ -1722,9 +1706,7 @@ public @interface Returned {
 }
 ```
 
-Note that this is a simple _marker_ interface that has no declared functionality.
-
-The new annotation is detected in the library builder when a native method is constructed:
+Parameters returned by-reference are detected in the library builder when a native method is constructed:
 
 ```java
 public NativeMethod build(Method method) {
@@ -1821,7 +1803,7 @@ Structures are the only type that can be returned in this manner, validation (no
 
 The `vkEnumeratePhysicalDevices` method enumerates the hardware devices by populating an array of handles.
 
-The native method eventually delegates to the following new method to populate the array:
+The native method eventually delegates to the following code to populate the array:
 
 ```java
 class ArrayTransformer {
@@ -1871,7 +1853,7 @@ public <T> T invoke(VulkanFunction<T> function, IntFunction<T> supplier) {
 
 Finally `vkGetPhysicalDeviceQueueFamilyProperties` returns a by-reference array of structures.
 
-There is a subtle difference between a 'normal' structure array and one being returned by-reference.  Both cases require the off-heap array to be allocated as a contiguous memory block, however the memory _layout_ of a by-reference parameter __must__ be a _pointer_ which has an `ADDRESS` layout.
+There is a subtle difference between a 'normal' structure array and one being returned by-reference.  Both cases require the off-heap array to be allocated as a contiguous memory block, however the memory _layout_ of a by-reference parameter __must__ be a _pointer_ (which has an `ADDRESS` layout).
 
 Therefore the following helper determines the actual layout used for a given parameter:
 
@@ -1930,7 +1912,7 @@ public StructLayout layout() {
 }
 ```
 
-In the native structure the `VkExtent3D` fields are essentially _embedded_ into the overall structure, whereas in the structure class `minImageTransferGranularity` is a normal pointer (there is no analog of embedding in Java).  The structure transformer will need to support both _atomic_ fields (i.e. primitives and pointer types) and nested structures.
+In the native structure the `VkExtent3D` fields are essentially _embedded_ into the overall structure, whereas in the structure class this field is a normal pointer (there is no analog of embedding in Java).  The structure transformer will need to support both _atomic_ fields (i.e. primitives and pointer types) and nested structures.
 
 The code that walks through the layout is first modified to include all members except for alignment padding:
 
@@ -2031,15 +2013,13 @@ Note that the field is _overwritten_ by a new instance of the nested structure.
 
 ---
 
-## Other
+## Final Touches
 
-This section covers the implementation of the various edge-cases or deferred features from the above.
+This section covers the implementation of the various edge-cases or features that were deferred.
 
 ### Returned Arrays
 
-A native method that returns an array is an edge-case for Java since the length of the resultant array cannot be determined from the return value itself.  Generally the length is provided separately, often returned as an integer-by-reference parameter in the same method.
-
-Therefore a returned array __cannot__ be modelled as a Java array and must be represented by a new, intermediate type:
+A native method that returns an array is an edge-case for Java since the length of the resultant array cannot be determined from the return value itself.  Generally the length is provided separately, often as an integer-by-reference parameter in the same method.  Therefore a returned array __cannot__ be modelled as a Java array and must be represented by a new, intermediate type:
 
 ```java
 public class ReturnedArray<T> {
@@ -2113,7 +2093,7 @@ Notes:
 
 * In fact the `extensions` method is the only such instance in the GLFW or Vulkan APIs.
 
-* An invalid array length cannot be bounds checked since the off-heap memory must be resized using the unsafe `reinterpret` method, this can result in a JVM crash.
+* An invalid array length cannot be bounds checked since the off-heap memory must be resized using the unsafe `reinterpret` method, which can result in a JVM crash.
 
 ### Default Registry
 

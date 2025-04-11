@@ -139,7 +139,7 @@ class ReverseMapping<E extends IntEnum> {
         E[] array = clazz.getEnumConstants();
         this.map = Arrays
             .stream(array)
-            .collect(toMap(IntEnum::value, Function.identity(), (a, b) -> a));
+            .collect(toMap(IntEnum::value, Function.identity(), (value, _) -> value));
     }
 }
 ```

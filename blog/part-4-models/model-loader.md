@@ -18,7 +18,7 @@ In this chapter we will create an OBJ loader to construct a JOVE representation 
 
 We will then implement some improvements to reduce the memory footprint of the resultant model and loading times.
 
-> In the real world we would use a more modern format that supported animation, skeletons, etc. but the OBJ is relatively simple to implement and is used in the Vulkan tutorial.
+> In the real world we would use a more modern format that supported animation, skeletons, etc. but OBJ is relatively simple to implement and is used in the Vulkan tutorial.
 
 ---
 
@@ -38,18 +38,20 @@ The most common commands are:
 | f             | see below     | face or triangle      | f 1//3 4//6 7//9  |
 | o             | name          | object                | o head            |
 | g             | name          | polygon group         | g body            |
-| s             | flag          | smoothing group       | s 1               |
+| s             | flag (int)    | smoothing group       | s 1               |
 
-The _face_ command specifies the vertices of a polygon as a tuple of indices delimited by the slash character (the normal and texture coordinate are optional):
+The slightly more complicated _face_ command specifies the vertices of a polygon as a tuple of indices delimited by the slash character:
 
-| example                   | position | texture | normal |
-| -------                   | -------- | ------- | ------ |
-| f 1 2 3                   | yes      | no      | no     |
-| f 1/2 3/4 5/6             | yes      | yes     | no     |
-| f 1//2 3//4 5//6          | yes      | no      | yes    |
-| f 1/2/3 4/5/6 7/8/9       | yes      | yes     | yes    |
+| example                   | polygon components					|
+| -------                   | ----------							|
+| f 1 2 3                   | vertex only							|
+| f 1/2 3/4 5/6             | vertex and texture coordinates		|
+| f 1//2 3//4 5//6          | vertex and normal						|
+| f 1/2/3 4/5/6 7/8/9       | vertex, normal texture coordinates	|
 
-Example for a simple triangle with texture coordinates:
+Note that component indices start at __one__ and can be negative to index from the end of the list.
+
+The following example specifies a simple triangle with texture coordinates:
 
 ```
 o object
@@ -461,7 +463,6 @@ Next a specialised implementation is introduced for a mesh with an index:
 public class IndexedMesh extends DefaultMesh {
     private final List<Integer> index = new ArrayList<>();
     
-    @Override
     public final int count() {
         return index.size();
     }
@@ -550,7 +551,7 @@ public class IndexBuffer extends VulkanBuffer {
 
     public IndexBuffer(VulkanBuffer buffer, VkIndexType type) {
         super(buffer);
-        this.type = notNull(type);
+        this.type = type;
         require(VkBufferUsageFlag.INDEX_BUFFER);
     }
 
@@ -585,7 +586,7 @@ public class VertexBuffer extends VulkanBuffer {
 }
 ```
 
-Similarly for buffers that are used as descriptor set resources (such as uniform buffers):
+And similarly for buffers that are used as descriptor set resources such as uniform buffers:
 
 ```java
 public class ResourceBuffer extends VulkanBuffer implements DescriptorResource {
@@ -594,8 +595,8 @@ public class ResourceBuffer extends VulkanBuffer implements DescriptorResource {
 
     public ResourceBuffer(VulkanBuffer buffer, VkDescriptorType type, long offset) {
         super(buffer);
-        this.type = notNull(type);
-        this.offset = zeroOrMore(offset);
+        this.type = type;
+        this.offset = offset;
         require(map(type));
     }
 
@@ -619,17 +620,17 @@ public static VkBufferUsageFlag map(VkDescriptorType type) {
 
 ### Model Persistence
 
-Although the OBJ loader and indexed mesh are relatively efficient, the process of loading the model is now quite slow.  We could attempt to optimise the code but this is usually very time-consuming and often results in complexity, leading to bugs and code that is difficult to maintain.
+Although the OBJ loader and indexed mesh are relatively efficient, the process of loading the model is now quite slow.  We could attempt to optimise the code but this is usually very time-consuming and often results in complexity leading to bugs.
 
 Instead we note that as things stand the following steps in the loading process are repeated _every_ time we run the demo:
 
 1. Load and parse the OBJ model.
 
-2. De-duplication of the vertex data.
+2. Deduplicate the vertex data.
 
-3. Transformation to NIO buffers.
+3. Transform to NIO buffers.
 
-Ideally the above steps would only be performed _once_ since we are only really interested in the resultant vertex and index bufferable objects.  Therefore a custom persistence mechanism is introduced to write the final model to the file-system _once_ as an off-line activity which can then be loaded with minimal overhead.
+Ideally the above steps only need be performed _once_ since the intermediate data is discarded once the resultant vertex and index buffers have been constructed.  Therefore a custom persistence mechanism is introduced to write the final model to the file-system as an off-line activity which can then be loaded with minimal overhead.
 
 A new component outputs a mesh to a `DataOutputStream` which supports both Java primitives and byte arrays:
 
@@ -747,24 +748,21 @@ And finally the mesh is instantiated:
 
 ```java
 return new AbstractMesh(primitive, new CompoundLayout(layout)) {
-    @Override
     public int count() {
         return count;
     }
 
-    @Override
     public ByteSizedBufferable vertices() {
         return vertices;
     }
 
-    @Override
     public Optional<ByteSizedBufferable> index() {
         return Optional.of(index);
     }
 };
 ```
 
-The `loadBuffer` helper is the inverse of `writeBuffer` above (with an additional check for an empty buffer):
+The `loadBuffer` helper is the inverse of `writeBuffer` above:
 
 ```java
 private static ByteSizedBufferable loadBuffer(DataInputStream in) throws IOException {

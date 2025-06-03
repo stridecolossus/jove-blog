@@ -18,7 +18,7 @@ title: Depth Buffers
 
 In this chapter we will render the chalet model constructed previously and resolve various visual problems that arise.
 
-Since we are now dealing with a model that has a specific orientation, the current view-transform matrix will be encapsulated into a new _camera_ model that allows the application to more easily configure the view.  This will be extended in the next chapter to allow the camera to be dynamically controlled by the keyboard and mouse.
+Since we are now dealing with a model that has a specific orientation, the current view-transform matrix will be encapsulated into a _camera_ model that allows the application to more easily configure the view.  This will be extended in the next chapter to allow the camera to be dynamically controlled by the keyboard and mouse.
 
 First we introduce enhancements to the existing geometry classes to more explicitly support normals and the cardinal axes.
 
@@ -121,11 +121,11 @@ The purpose of these changes are:
 
 1. The intent of code using the new types is now more expressive and type-safe, e.g. classes that _require_ a unit-vector can now enforce the `Normal` type explicitly.
 
-2. Reduces the reliance on documented assumptions and defensive checks to ensure vectors are normalised as required, e.g. when generating rotation matrices.
+2. Reduces the reliance on documented assumptions and defensive checks to ensure vectors are normalised, e.g. when generating rotation matrices.
 
 3. The overhead of re-normalising is trivial where an already normalized vector is referenced as the base `Vector` type.
 
-4. The hierarchy now supports extension points for further optimisations, e.g. caching of the inverse cardinal axes.
+4. The hierarchy now supports extension points for further optimisations.
 
 The implementation of the `matrix` method for a quaternion is less performant than the code for the cardinal axes.  For an immutable, one-off rotation this probably would not be a concern, but for frequently recalculated rotations about the cardinal axes the faster solution is preferable.  Therefore the axis-angle class selects the most appropriate algorithm:
 
@@ -159,9 +159,9 @@ public class Camera {
 }
 ```
 
-Note that under the hood the camera direction is the inverse of the view direction, i.e. the camera points _out_ of the screen whereas the view is obviously into the screen.
+Note that under the hood the camera direction is the inverse of the view direction, i.e. the camera points _out_ of the screen whereas the view is obviously _into_ the screen.
 
-Various mutators are provided to move the camera:
+Mutators are provided to reposition the camera:
 
 ```java
 public void move(Point pos) {
@@ -177,12 +177,12 @@ public void move(float dist) {
 }
 ```
 
-And a convenience method points the camera at a given target:
+And the following convenience method points the camera at a given target:
 
 ```java
-public void look(Point pt) {
-    if(pos.equals(pt)) throw new IllegalArgumentException();
-    Vector look = Axis.between(pt, pos);
+public void look(Point target) {
+    if(pos.equals(target)) throw new IllegalArgumentException(...);
+    Vector look = Vector.between(target, pos);
     direction(new Normal(look));
 }
 ```
@@ -200,7 +200,7 @@ public static Vector between(Point start, Point end) {
 
 Note that this camera model is subject to gimbal locking, e.g. if the direction is set to the _up_ axis.  Validation is added (not shown) to the relevant setters to prevent this occurring.  Later on we will replace the _direction_ property with a more advanced implementation for the camera orientation to mitigate this problem.
 
-Next the following transient members are added to the camera class to support the view transform:
+Next the following transient members are added to the camera class to support view transform:
 
 ```java
 public class Camera {
@@ -233,11 +233,9 @@ The `update` method first determines the viewport axes based on the camera axes:
 
 ```java
 private void update() {
-    // Determine right axis
     right = up.cross(dir).normalize();
-
-    // Determine up axis
     Vector y = dir.cross(right).normalize();
+	...
 }
 ```
 
@@ -252,7 +250,7 @@ public Vector cross(Vector vec) {
 }
 ```
 
-And finally the matrix is constructed from the translation and rotation components as before:
+And the view transformation matrix is constructed from the translation and rotation components as before:
 
 ```java
 // Build translation component
@@ -336,7 +334,7 @@ Command draw = DrawCommand.of(mesh);
 
 ### Integration #1
 
-A new `ModelDemo` project is started based on the previous rotating cube demo, minus the rotation animation.
+A new `ModelDemo` project is started based on the previous rotating cube demo.
 
 The existing view-transform code is replaced with a camera:
 
@@ -417,7 +415,7 @@ private VulkanBuffer buffer(ByteSizedBufferable data, VkBufferUsage usage) {
 }
 ```
 
-And the index is bound in the render configuration:
+And finally the index is bound in the render configuration:
 
 ```java
 @Bean("index.bind")
@@ -426,14 +424,14 @@ static Command index(IndexBuffer index) {
 }
 ```
 
-Finally the `update` method is refactored as follows:
+The chalet model is orientated with the viewer looking down from above, therefore the `update` method is refactored to introduce a local model transformation:
 
 ```java
 @Bean
 public FrameListener update(ResourceBuffer uniform) {
     return frame -> {
-        Matrix tilt = new AxisAngle(Axis.X, MathsUtil.toRadians(-90)).matrix();
-        Matrix rot = new AxisAngle(Axis.Y, MathsUtil.toRadians(120)).matrix();
+        Matrix tilt = new AxisAngle(Axis.X, toRadians(-90)).matrix();
+        Matrix rot = new AxisAngle(Axis.Y, toRadians(120)).matrix();
         Matrix model = rot.multiply(tilt);
         Matrix matrix = projection.multiply(cam.matrix()).multiply(model);
         matrix.buffer(uniform.buffer());
@@ -441,13 +439,13 @@ public FrameListener update(ResourceBuffer uniform) {
 }
 ```
 
-The default camera configuration means we are looking at the model from above, therefore the `model` component of the matrix is introduced where:
+Where:
 
-* The _tilt_ sets the orientation of the model so we are looking at it from the side.
+* The _tilt_ orientates the model so the view is from the side.
 
-* And _rot_ rotates vertically so the camera is facing the corner of the chalet with the door.
+* And _rot_ rotates vertically such that the camera is facing the corner of the chalet with the door.
 
-* Note that the camera was also moved slightly above 'ground' level.
+* Note that the camera was also moved slightly above the 'ground' level.
 
 When we run the demo the results are a bit of a mess:
 
@@ -457,11 +455,19 @@ There are a couple of issues here but the most obvious is that the texture appea
 
 ### Texture Coordinate Invert
 
-The upside-down texture is due to the fact that OBJ texture coordinates (and OpenGL) assume an origin at the bottom-left of the image, whereas for Vulkan the 'start' of the texture image is the top-left corner.
+The upside-down texture is due to the fact that OBJ texture coordinates (and OpenGL) assume an origin at the bottom-left corner of the image whereas Vulkan uses the top-left corner.
 
-We _could_ fiddle the texture coordinates in the shader, or flip the texture using an editor application, or invert it programatically at load time.  However none of these resolve the actual root problem, flipping the image would just add extra effort, and inverting at runtime would only make loading slower.  Instead the vertical texture coordinate is flipped _once_ when the OBJ model is first loaded.
+The texture coordinates _could_ be fiddled by one of the following options:
 
-The following adapter method flips the vertical component of each texture coordinate:
+* Flip the vertical texture component in the vertex shader.
+
+* Flip the image once using an image editing package - just adds an extra manual step.
+
+* Invert the image programmatically at load-time - makes loading slower.
+
+However none of these resolve the actual root problem, a better solution is to perform the flip _once_ when the OBJ model is constructed off-line.
+
+The following adapter flips the vertical texture coordinate:
 
 ```java
 private static Coordinate2D flip(float[] array) {
@@ -484,7 +490,7 @@ After regenerating the model it now looks to be textured correctly, in particula
 
 ### Depth Test
 
-The second problem is that fragments are being rendered arbitrarily overlapping, either the geometry needs to be ordered by distance from the camera, or the _depth test_ is enabled to ensure that obscured fragments are ignored.  The depth test uses the _depth buffer_ which is a special attachment that records the distance of each rendered fragment, discarding subsequent fragments that are closer to the camera.
+The second problem is that fragments are being rendered arbitrarily overlapping - either the geometry needs to be ordered by distance from the camera, or the _depth test_ is enabled to ensure that obscured fragments are ignored.  The depth test uses the _depth buffer_ which is a special attachment that records the distance of each rendered fragment, discarding subsequent fragments that are closer to the camera.
 
 The depth test is configured by a new pipeline stage:
 
@@ -524,7 +530,6 @@ The temporary code can now be moved to a new implementation for colour attachmen
 
 ```java
 record ColourClearValue(Colour col) implements ClearValue {
-    @Override
     public void populate(VkClearValue value) {
         value.setType("color");
         value.color.setType("float32");
@@ -544,7 +549,6 @@ record DepthClearValue(Percentile depth) implements ClearValue {
      */
     public static final DepthClearValue DEFAULT = new DepthClearValue(Percentile.ONE);
 
-    @Override
     public void populate(VkClearValue value) {
         value.setType("depthStencil");
         value.depthStencil.depth = depth.floatValue();
@@ -948,7 +952,7 @@ void pause(RenderLoop loop, Window window) {
 }
 ```
 
-And a close handler is also registered so we can finally close the window via the widget or menu:
+And a close handler is also registered so we can _finally_ close the window:
 
 ```java
 @Autowired
@@ -971,7 +975,10 @@ public class FormatSelector {
     private final Predicate<VkFormatProperties> filter;
 
     public Optional<VkFormat> select(List<VkFormat> candidates) {
-        return candidates.stream().filter(this::matches).findAny();
+        return candidates
+			.stream()
+			.filter(this::matches)
+			.findAny();
     }
 }
 ```

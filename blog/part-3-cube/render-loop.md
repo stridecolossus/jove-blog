@@ -713,6 +713,8 @@ For this reason the fence is initialised to the `SIGNALED` state.
 
 The updated `render` method now looks like this:
 
+TODO - where is the fence configured in this process? i.e. waitReady but never passed in?
+
 ```java
 public void render(RenderSequence seq) {
     // Wait for previous frame to complete

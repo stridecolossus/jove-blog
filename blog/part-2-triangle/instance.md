@@ -15,7 +15,7 @@ title: The Vulkan Instance
 
 ## Overview
 
-The first step in the development of JOVE is to create the Vulkan _instance_ which the root object for everything that follows.
+The first step in the development of JOVE is to create the Vulkan _instance_ which is the root object for everything that follows.
 
 Creating the instance involves the following steps:
 
@@ -90,11 +90,13 @@ Notes:
 
 * Only the API methods actually needed at this stage are declared in the JNA library.
 
-* We have intentionally retained the Hungarian notation used in Vulkan parameter names.
+* The API retains the Hungarian notation generally used in Vulkan.
 
 * The handle to the newly created instance is returned as a JNA `PointerByReference` object which maps to a native `VkInstance*` return-by-reference type.
 
-* The `pAllocator` parameter in the API methods is out-of-scope for JOVE and is always set to `null`.
+* The `vkCreateInstance` method temporarily returns a primitive integer rather than an instance of the `VkResult` enumeration.
+
+* The `pAllocator` parameter in the API is out-of-scope for JOVE and is always set to `null`.
 
 To instantiate the API itself the following factory method is added to the library:
 
@@ -120,8 +122,8 @@ public class Instance {
     private final Pointer handle;
 
     private Instance(VulkanLibrary lib, Pointer handle) {
-        this.lib = notNull(lib);
-        this.handle = notNull(handle);
+        this.lib = lib;
+        this.handle = handle;
     }
 
     VulkanLibrary library() {
@@ -146,12 +148,12 @@ public static class Builder {
     private Version ver = new Version(1, 0, 0);
 
     public Builder name(String name) {
-        this.name = notEmpty(name);
+        this.name = name;
         return this;
     }
 
     public Builder version(Version ver) {
-        this.ver = notNull(ver);
+        this.ver = ver;
         return this;
     }
 
@@ -174,7 +176,7 @@ public record Version(int major, int minor, int patch) implements Comparable<Ver
 
     @Override
     public int compareTo(Version that) {
-        return this.toInteger() - that.toInteger();
+		return Integer.compare(this.toInteger(), this.toInteger());
     }
 }
 ```
@@ -211,7 +213,7 @@ info.pApplicationInfo = app;
 The relevant API method is invoked to create the instance:
 
 ```java
-PointerByReference handle = new PointerByReference();
+var handle = new PointerByReference();
 check(lib.vkCreateInstance(info, null, handle));
 ```
 
@@ -274,13 +276,11 @@ public static class Builder {
     ...
 
     public Builder extension(String ext) {
-        Check.notEmpty(ext);
         extensions.add(ext);
         return this;
     }
 
     public Builder layer(ValidationLayer layer) {
-        Check.notNull(layer);
         layers.add(layer.name());
         return this;
     }
@@ -363,7 +363,7 @@ public class Desktop {
     private final DesktopLibrary lib;
 
     Desktop(DesktopLibrary lib) {
-        this.lib = notNull(lib);
+        this.lib = lib;
     }
 
     public boolean isVulkanSupported() {
@@ -371,7 +371,7 @@ public class Desktop {
     }
 
     public String[] extensions() {
-        IntByReference size = new IntByReference();
+        var size = new IntByReference();
         Pointer ptr = lib.glfwGetRequiredInstanceExtensions(size);
         return ptr.getStringArray(0, size.getValue());
     }
@@ -485,11 +485,6 @@ public class Handler {
     private final Pointer handle;
     private final Instance instance;
 
-    private Handler(Pointer handle, Instance instance) {
-        this.handle = notNull(handle);
-        this.instance = notNull(instance);
-    }
-    
     public record Message { ... }
     
     static class MessageCallback { ... }
@@ -511,10 +506,6 @@ Vulkan reports diagnostics messages via a callback function which is implemented
 ```java
 static class MessageCallback implements Callback {
     private final Consumer<Message> consumer;
-
-    MessageCallback(Consumer<Message> consumer) {
-        this.consumer = consumer;
-    }
 
     /**
      * Callback handler method.
@@ -548,7 +539,7 @@ Collection<VkDebugUtilsMessageType> typesEnum = IntEnum.mapping(VkDebugUtilsMess
 The relevant data is then composed into a message instance and delegated to the handler:
 
 ```java
-Message message = new Message(severityEnum, typesEnum, pCallbackData);
+var message = new Message(severityEnum, typesEnum, pCallbackData);
 consumer.accept(message);
 ```
 
@@ -635,7 +626,7 @@ Next the function to create the handler is invoked with the appropriate argument
 
 ```java
 Pointer parent = instance.handle();
-PointerByReference ref = new PointerByReference();
+var ref = new PointerByReference();
 Object[] args = {parent, info, null, ref};
 check(create.invokeInt(args));
 ```

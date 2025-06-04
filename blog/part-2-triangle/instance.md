@@ -176,7 +176,7 @@ public record Version(int major, int minor, int patch) implements Comparable<Ver
 
     @Override
     public int compareTo(Version that) {
-		return Integer.compare(this.toInteger(), this.toInteger());
+        return Integer.compare(this.toInteger(), this.toInteger());
     }
 }
 ```

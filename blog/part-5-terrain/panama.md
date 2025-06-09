@@ -10,7 +10,6 @@ title: Panama Integration
 - [Design](#design)
 - [Framework](#framework)
 - [Structures](#structures)
-- [Unmarshalling](#unmarshalling)
 - [Returned Parameters](#returned-parameters)
 - [Conclusion](#conclusion)
 - [Summary](#summary)
@@ -58,63 +57,64 @@ The process of invoking a native method using FFM is:
 
 4. Invoke the handle with an array of the appropriate arguments.
 
-The GLFW library must first be initialised which returns an integer success code:
+This process is illustrated in the following code which initialises GLFW returning an integer success code:
 
 ```java
-MethodHandle glfwInit = linker.downcallHandle(
-    lookup.find("glfwInit").orElseThrow(),
-    FunctionDescriptor.of(ValueLayout.JAVA_INT)
-);
-println("glfwInit=" + glfwInit.invoke());
+private void init() {
+    MemorySegment symbol = lookup.find("glfwInit").orElseThrow();
+    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.of(ValueLayout.JAVA_INT));
+    println("init=" + handle.invoke());
+}
 ```
 
-The GLFW version string can now be retrieved:
+The GLFW version can be queried:
 
 ```java
-MethodHandle glfwGetVersionString = linker.downcallHandle(
-    lookup.find("glfwGetVersionString").orElseThrow(),
-    FunctionDescriptor.of(ValueLayout.ADDRESS);
-);
-MemorySegment versionAddress = (MemorySegment) glfwGetVersionString.invoke();
-String version = versionAddress.reinterpret(Integer.MAX_VALUE).getString(0L);
-println("glfwGetVersionString=" + version);
+private void version() {
+    MemorySegment symbol = lookup.find("glfwGetVersionString").orElseThrow(),
+    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.of(ValueLayout.ADDRESS));
+    MemorySegment address = (MemorySegment) handle.invoke();
+    String version = versionAddress.reinterpret(Integer.MAX_VALUE).getString(0L);
+    println("version=" + version);
+}
 ```
 
 Notes:
 
 * The `0L` argument in the `getString` helper is an offset into the off-heap memory.
 
-* The returned address has to be _reinterpreted_ to expand the bounds of the off-heap memory, in this case to an undefined length for a pointer to a null-terminated character array.
+* The returned address has to be _reinterpreted_ to expand the bounds of the off-heap memory, which in this case is an undefined length for a pointer to a null-terminated character array.
 
-Support for Vulkan can also be queried:
-
-```java
-MethodHandle glfwVulkanSupported = linker.downcallHandle(
-    lookup.find("glfwVulkanSupported").orElseThrow(),
-    FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN);
-);
-println("glfwVulkanSupported=" + glfwVulkanSupported.invoke());
-```
-
-Retrieving the supporting Vulkan extensions is slightly complex since the API method returns a pointer to a string-array and uses a _by reference_ integer to return the size of the array as a side-effect:
+Support for Vulkan can also be tested:
 
 ```java
-MethodHandle glfwGetRequiredInstanceExtensions = linker.downcallHandle(
-    lookup.find("glfwGetRequiredInstanceExtensions").orElseThrow(),
-    FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS);
-);
-MemorySegment count = arena.allocate(ValueLayout.ADDRESS);
-MemorySegment extensions = (MemorySegment) glfwGetRequiredInstanceExtensions.invoke(count);
+private void supported() {
+    MemorySegment symbol = lookup.find("glfwVulkanSupported").orElseThrow(),
+    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN));
+    println("supported=" + handle.invoke());
+}
 ```
 
-The length of the array is extracted from the by-reference argument to resize the off-heap memory:
+Retrieving the supporting Vulkan extensions for the platform is slightly complex since the API returns a pointer to a string-array and uses a _by reference_ integer to return the size of the array as a side-effect:
+
+```java
+private void extensions() {
+    MemorySegment symbol = lookup.find("glfwGetRequiredInstanceExtensions").orElseThrow(),
+    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    MemorySegment count = arena.allocate(ValueLayout.ADDRESS);
+    MemorySegment extensions = (MemorySegment) handle.invoke(count);
+    ...
+}
+```
+
+The length of the array is extracted from the by-reference `count` to resize the off-heap memory:
 
 ```java
 int length = count.get(ValueLayout.JAVA_INT, 0L);
 MemorySegment array = extensions.reinterpret(length * ValueLayout.ADDRESS.byteSize());
 ```
 
-And each element is extracted and transformed to a Java string:
+And each element is then extracted and transformed to a Java string:
 
 ```java
 for(int n = 0; n < length; ++n) {
@@ -126,16 +126,14 @@ for(int n = 0; n < length; ++n) {
 Finally GLFW is closed:
 
 ```java
-MethodHandle glfwTerminate = linker.downcallHandle(
-    lookup.find("glfwTerminate").orElseThrow(),
-    FunctionDescriptor.ofVoid()
-);
-glfwTerminate.invoke();
+private void terminate() {
+    MemorySegment symbol = lookup.find("glfwTerminate").orElseThrow(),
+    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.ofVoid());
+    glfwTerminate.invoke();
+}
 ```
 
-Note that `reinterpret` is an unsafe operation that can result in a JVM crash for an out-of-bounds array or string length, since the actual size off the off-heap memory cannot be guaranteed by the JVM.
-
-Additionally this method is _restricted_ and will generate a runtime warning, which can be suppressed with the following VM argument:
+Note that `reinterpret` is an _unsafe_ operation that can result in a JVM crash for an out-of-bounds array or string length, since the actual size off the off-heap memory cannot be guaranteed by the JVM.  Additionally this method is _restricted_ and will generate a runtime warning, which can be suppressed by the following VM argument:
 
 ```
 --enable-native-access=ALL-UNNAMED
@@ -227,7 +225,7 @@ From these requirements the following observations can be made concerning some o
 
 ### Design
 
-From the above the following framework component are identified:
+From the above the following framework components are identified:
 
 * A _native library builder_ responsible for constructing the FFM implementation of a native API expressed in domain terms.
 
@@ -467,7 +465,7 @@ To summarise, the new framework:
 
 * Maps and links the user-defined API methods to the native library.
 
-* Maps the domain type of the parameters and the return value to the equivalent FFM memory layout (albeit only for primitive integers so far).
+* Maps the parameters and return value of a method to the equivalent FFM memory layout (albeit only for primitive integers so far).
 
 * Transparently delegates API calls to the underlying native methods.
 
@@ -477,7 +475,7 @@ With the basic framework in place the next step is to implement support for the 
 
 The first attempt used the functionality provided by the `MethodHandle` class (used extensively in FFM) which supports transformation of the incoming arguments and the method return value.  This initially seemed a perfect fit, however in practice the code became convoluted very quickly.  The logic required to mutate an argument is generally also implemented as 'target' method handles, resulting in fiddly lookup and binding code for all but the most trivial cases.
 
-After some time we abandoned this approach in favour of pre/post-processing the arguments around invocation of the native method.  The code became much clearer and easier to unit-test, at the expense of some additional processing.  Of importance is error cases can still be trapped when the native method is being constructed.
+After some time we abandoned this approach in favour of pre/post-processing the arguments around invocation of the native method.  The code became much clearer and easier to unit-test, at the expense of some additional processing.  Of importance is that error cases can still be trapped when the native method is being constructed.
 
 > As it turns out some form of pre/post-processing would probably have been needed anyway, since it hard to envisage how by-reference parameters could be implemented solely using the `MethodHandle` class.
 
@@ -627,7 +625,7 @@ private FunctionDescriptor descriptor() {
 
 ### Implementation
 
-The following sections cover support for some of the remaining use-cases that can be easily refactored into the new framework.
+The following sections cover some of the remaining use-cases that can be easily plugged into the new framework at this stage.
 
 #### String
 
@@ -673,12 +671,12 @@ With a companion transformer:
 
 ```java
 public static class HandleTransformer implements Transformer<Handle> {
-    public MemorySegment marshal(Handle arg, SegmentAllocator _) {
+    public MemorySegment marshal(Handle arg, SegmentAllocator allocator) {
         return arg.address;
     }
 
-    public Handle unmarshal(MemorySegment address) {
-        return new Handle(address);
+    public Function<MemorySegment, Handle> unmarshal() {
+        return Handle::new;
     }
 }
 ```
@@ -690,12 +688,12 @@ public interface NativeObject {
     Handle handle();
 
     public static class NativeObjectTransformer implements Transformer<NativeObject> {
-        public MemorySegment marshal(NativeObject arg, SegmentAllocator _) {
+        public MemorySegment marshal(NativeObject arg, SegmentAllocator allocator) {
             return arg.handle().address();
         }
 
-        public NativeObject unmarshal(MemorySegment address) {
-            throw new UnsupportedOperationException();
+        public Function<? extends Object, NativeObject> unmarshal() {
+            throw new UnsupportedOperationException(...);
         }
     }
 }
@@ -720,7 +718,7 @@ public Transformer<?> transformer(Class<?> type) {
 }
 ```
 
-The `derive` method scans the registry for an available transformer with an suitable supertype:
+The `derive` method scans the registry for an available transformer with a suitable supertype:
 
 ```java
 private Transformer derive(Class<?> type) {
@@ -1033,7 +1031,7 @@ Nice.
 
 #### Empty Values
 
-The framework now supports reference types that could legitimately be `null` for an unused or empty value, which FFM represents with the `MemorySegment.NULL` constant.
+The framework now supports reference types that can legitimately be `null` for unused or empty values, which FFM represents with the `MemorySegment.NULL` constant.
 
 An `empty` value is added to the definition of the transformer:
 
@@ -1222,13 +1220,13 @@ return new Transformer<>() {
 
 #### Arrays
 
-Arrays are the final type that is missing from marshalling framework, will be required for the extensions and validation layers of the Vulkan instance.
+Arrays are the final type missing from the framework and will be required for the extensions and validation layers of the Vulkan instance.
 
 The following new implementation composes a transformer that marshals the _component type_ of the array:
 
 ```java
 public class ArrayTransformer<T> implements Transformer<T[]> {
-    private final Transformer<T> transformer;
+    private final Transformer<T> component;
 
     public MemoryLayout layout() {
         return ValueLayout.ADDRESS;
@@ -1248,7 +1246,7 @@ public class ArrayTransformer<T> implements Transformer<T[]> {
 The `marshal` method first allocates the off-heap memory as a contiguous block given the layout of the component:
 
 ```java
-MemoryLayout layout = transformer.layout();
+MemoryLayout layout = component.layout();
 MemorySegment address = allocator.allocate(layout, array.length);
 ```
 
@@ -1258,16 +1256,24 @@ Next a _var handle_ is created to access the elements of the array:
 var handle = Transformer.removeOffset(layout.arrayElementVarHandle());
 ```
 
-And each element is transformed and written to the off-heap memory using the handle:
+The handle is essentially the same as using the various mutator methods on the `MemorySegment` class but is more convenient in this case.
+
+Modifying the off-heap data requires a byte offset argument (a _coordinate_ in FFM terms) even though this value is almost always zero.  The `removeOffset` method is a convenience helper that initialises this argument once:
 
 ```java
-for(int n = 0; n < array.length; ++n) {
-    Object element = Transformer.marshal(array[n], transformer, allocator);
-    handle.set(address, (long) n, element);
+public static VarHandle removeOffset(VarHandle handle) {
+    return MethodHandles.insertCoordinates(handle, 1, 0L);
 }
 ```
 
-The handle is essentially the same as using the various mutator methods on the `MemorySegment` class but is more convenient in this case.
+Finally each element is transformed and written to the off-heap memory using the handle:
+
+```java
+for(int n = 0; n < array.length; ++n) {
+    Object element = Transformer.marshal(array[n], component, allocator);
+    handle.set(address, (long) n, element);
+}
+```
 
 Whilst this class is public and can be used directly by the application (if required) it seems logical that an array of a supported type should also be automatically marshalled.
 
@@ -1397,7 +1403,7 @@ public StructLayout layout() {
 
 Notes:
 
-* These layouts are copied from the code generated by the `jextract` tool earlier.
+* The memory layouts and constants are copied from the code generated by the `jextract` tool earlier.
 
 * The JOVE code generator will need to track the byte alignment of each structure and inject padding as required.
 
@@ -1423,87 +1429,37 @@ This code compiles and runs but does nothing since we are not actually populatin
 
 ### Field Mapping
 
-The process of marshalling a structure field is:
+Marshalling a structure requires the transformer factory to construct and iterate over the _field mappings_ between the Java structure and the off-heap memory layout.
 
-1. Retrieve the value of the field from the structure.
-
-2. Apply the transformer.
-
-3. Set the transformed field in the off-heap memory.
-
-This is implemented by a new _field mapping_ type:
+First an instance of the structure is created such that the memory layout can be retrieved:
 
 ```java
-record FieldMapping(VarHandle local, VarHandle foreign, Transformer<?> transformer) {
-    public void marshal(NativeStructure structure, MemorySegment address, SegmentAllocator allocator) {
-        Object value = local.get(structure);
-        Object arg = Transformer.marshal(value, transformer, allocator);
-        foreign.set(address, arg);
-    }
-}
-```
-
-Where `field` and `foreign` are handles to the structure field and off-heap field respectively.
-
-Marshalling a structure is simply a matter of iterating over a list of field mappings:
-
-```java
-record StructureMapping(StructLayout layout, List<FieldMapping> fields) {
-    public void marshal(NativeStructure structure, MemorySegment address, SegmentAllocator allocator) {
-        for(var f : fields) {
-            f.marshal(structure, address, allocator);
-        }
-    }
+public Transformer<NativeStructure> create(Class<? extends NativeStructure> type) {
+    Constructor<? extends NativeStructure> constructor = type.getConstructor();
+    Supplier<? extends NativeStructure> factory = () -> constructor.newInstance();
+    NativeStructure instance = factory.get();
+    StructLayout layout = instance.layout();
+    ...
 }
 ```
 
 Notes:
 
-* Unmarshalling of structures is handled below when the diagnostic handler is integrated.
+* Exception handling and helper methods have been silently inlined for brevity.
 
-* Pointers to other structures (e.g. the `pApplicationInfo` field of the instance descriptor) are automatically handled by this mechanism recursively, since a field mapping composes a transformer which can also marshal structures.
+* The `factory` is also used when unmarshalling structures later.
 
-It is worth considering that the `marshal` method allocates and populates the off-heap memory on _every_ invocation, with the memory being discarded afterwards.  A future enhancement _could_ cache and reuse the memory address and implement some sort of synchronisation mechanism (which is the JNA approach), but this would be quite complex and is not required for the forseeable future.  In reality native structures only have scope during marshalling, therefore the simpler approach seems more palatable.
-
-### Builder
-
-The `StructureTransformerFactory` above delegates to the following new component to build the field mappings for a given structure:
+Next control is delegated to a helper which constructs the field mappings for the structure:
 
 ```java
-class Builder {
-    private final Lookup lookup = MethodHandles.lookup();
-    private final Registry registry;
-
-    public StructureMapping build(Class<? extends NativeStructure> type) {
-    }
-}
+Helper helper = new Helper(type, layout);
+List<FieldMapping> fields = helper.build();
 ```
 
-The `build` method first creates an instance of the structure which is used to retrieve its FFM memory layout:
+The `build` method iterates over the members of the memory layout and constructs each field mapping:
 
 ```java
-NativeStructure instance = type.getConstructor().newInstance();
-StructLayout layout = instance.layout();
-```
-
-Notes:
-
-* This implies that every native structure __must__ expose a default constructor, a common constraint for a marshalling framework.
-
-* Exception handling has been omitted and helper methods silently inlined for brevity.
-
-The builder delegates to a helper class to construct the mappings:
-
-```java
-var helper = new Helper(type, layout);
-List<FieldMapping> mappings = helper.build();
-return new StructureMapping(layout, mappings);
-```
-
-The helper iterates over the members of the memory layout:
-
-```java
-public List<FieldMapping> build() {
+private List<FieldMapping> build() {
     return layout
         .memberLayouts()
         .stream()
@@ -1513,51 +1469,91 @@ public List<FieldMapping> build() {
 }
 ```
 
-Each structure field is looked via reflection by the name declared in the memory layout:
+The structure field is reflected via the name configured in the structure layout:
 
 ```java
 private FieldMapping mapping(MemoryLayout member) {
-    String name = member.name().orElseThrow();
+    String name = member.name().orElseThrow(...);
     Field field = type.getField(name);
     ...
 }
 ```
 
-The _local_ handle is created from the reflected field:
+Which is converted to a handle:
 
 ```java
-VarHandle local = lookup.unreflectVarHandle(field);
+VarHandle local = MethodHandles.lookup().unreflectVarHandle(field);
 ```
 
-And the _foreign_ (or off-heap) handle is created from the memory layout:
+Similarly a handle is created to the off-heap field:
 
 ```java
-PathElement path = PathElement.groupElement(field.getName());
+PathElement path = PathElement.groupElement(name);
 VarHandle foreign = Transformer.removeOffset(layout.varHandle(path));
 ```
 
-Modifying the off-heap field requires a byte offset argument (a _coordinate_ in FFM terms) even though this value is almost always zero.  The `removeOffset` method is a convenience helper that initialises this argument once:
-
-```java
-public static VarHandle removeOffset(VarHandle handle) {
-    return MethodHandles.insertCoordinates(handle, 1, 0L);
-}
-```
-
-Finally the handles and transformer are composed into the field mapping:
+And these are both composed with the transformer into a new type:
 
 ```java
 Transformer<?> transformer = registry.transformer(field.getType());
 return new FieldMapping(local, foreign, transformer);
 ```
 
-The structure layout conveniently specifies the order of the fields _explicitly_ since it must obviously exactly match the native representation (including alignment).  This is unlike reflection where the order is arbitrary, hence there is no need for something like the `@FieldOrder` annotation that was required for JNA structures.
+The process of marshalling a structure field is:
+
+1. Retrieve the value of the field from the structure.
+
+2. Apply the transformer.
+
+3. Set the transformed field in the off-heap memory.
+
+Which is implemented as follows:
+
+```java
+private record FieldMapping(VarHandle local, VarHandle foreign, Transformer<?> transformer) {
+    public void marshal(NativeStructure structure, MemorySegment address, SegmentAllocator allocator) {
+        Object value = local.get(structure);
+        Object result = Transformer.marshal(value, transformer, allocator);
+        foreign.set(address, result);
+    }
+}
+```
+
+Where `local` and `foreign` are the handles to the structure field and off-heap field respectively.
+
+The final step is to create the transformer which is essentially a compound adapter for the field mappings:
+
+```java
+return new Transformer<>() {
+    public MemoryLayout layout() {
+        return layout;
+    }
+
+    public MemorySegment marshal(NativeStructure structure, SegmentAllocator allocator) {
+        MemorySegment address = allocator.allocate(layout);
+        for(FieldMapping f : fields) {
+            f.marshal(structure, address, allocator);
+        }
+        return address;
+    }
+};
+```
+
+Notes:
+
+* Unmarshalling of structures is handled below when the diagnostic handler is integrated.
+
+* Pointers to other structures (e.g. the `pApplicationInfo` field of the instance descriptor) are automatically handled by this mechanism recursively, since a field mapping composes a transformer which can also marshal further structures.
+
+* The structure layout conveniently specifies the order of the fields _explicitly_ since it must obviously match the native representation exactly (including alignment).  This is unlike reflection where the order is arbitrary, hence there is no need for anything like the `@FieldOrder` annotation that was required for JNA structures.
+
+It is worth considering that the `marshal` method allocates and populates the off-heap memory on _every_ invocation, with the memory being discarded afterwards.  A future enhancement _could_ cache and reuse the memory address and implement some sort of synchronisation mechanism (which is the JNA approach), but this would be quite complex and is not required for the forseeable future.  In reality native structures only have scope during marshalling, therefore the simpler approach seems more palatable.
 
 In the prototype the Vulkan instance should now be successfully instantiated and configured using the new framework.  A lot of work to get to the stage JOVE was at several years previously.
 
 ### Unmarshalling
 
-To reduce the chance of breaking something the diagnostics handler will be reintroduced before progressing further.  This requires _unmarshalling_ of the diagnostic report which neatly completes the framework for structures.
+To reduce the chance of breaking something the diagnostics handler will be reintroduced now before progressing further, which requires _unmarshalling_ of the diagnostic report structure.
 
 #### Diagnostic Handler
 
@@ -1628,7 +1624,7 @@ protected void release() {
     Handle function = instance.function("vkDestroyDebugUtilsMessengerEXT");
 
     // Build the native method
-    NativeTransformerRegistry registry = ...
+    Registry registry = ...
     NativeMethod destroy = new NativeMethod.Builder(registry)
         .address(function.address())
         .parameter(Instance.class)
@@ -1670,10 +1666,10 @@ Note that again the signature of the callback must be hard-coded based on the do
 public boolean message(int severity, int typeMask, MemorySegment pCallbackData, MemorySegment pUserData)
 ```
 
-The resultant method handle is then bound to the callback _instance_ in order to delegate diagnostic reports to a specific handler:
+The resultant method handle is then bound to the callback _instance_ in order to delegate diagnostic reports to the relevant handler:
 
 ```java
-MthodHandle binding = handle.bindTo(this);
+MethodHandle binding = handle.bindTo(this);
 ```
 
 This handle is then linked to an up-call stub with a function descriptor matching the `message` method:
@@ -1696,7 +1692,7 @@ The `build` method of the handler is modified to lookup the transformer for the 
 ```java
 public DiagnosticHandler build() {
     ...
-    var transformer = (Transformer<NativeStructure>) registry.get(VkDebugUtilsMessengerCallbackData.class);
+    var transformer = registry.get(VkDebugUtilsMessengerCallbackData.class);
     var callback = new MessageCallback(consumer, transformer);
     var info = populate(callback.address());
     ...
@@ -1723,13 +1719,13 @@ The last required change is to unmarshal the diagnostic report received by the `
 ```java
 public boolean message(...) {
     long size = transformer.layout().byteSize();
-    var segment = pCallbackData.reinterpret(size);
+    MemorySegment segment = pCallbackData.reinterpret(size);
     var data = (VkDebugUtilsMessengerCallbackData) transformer.unmarshal(segment);
     ...
 }
 ```
 
-Note that in this case the off-heap memory needs to be explicitly resized to match the expected structure.
+In this case the off-heap memory needs to be explicitly resized to match the expected structure.
 
 Unmarshalling a structure field is essentially the inverse of the `marshal` method:
 
@@ -1743,33 +1739,21 @@ record FieldMapping(...) {
 }
 ```
 
-And similarly for the structure itself:
+And similarly for the structure itself in the transformer:
 
 ```java
-class StructureMapping(...) {
-    public void unmarshal(MemorySegment address, NativeStructure structure) {
-        for(var f : fields) {
-            f.unmarshal(address, structure);
-        }
-    }
-}
-```
-
-Finally the following method instantiates a new structure instance and delegates to the unmarshalling code:
-
-```java
-record CompoundFieldMapping(StructLayout layout, Supplier<NativeStructure> factory, List<FieldMapping> fields) {
-    public NativeStructure unmarshal(MemorySegment address) {
-        var structure = factory.get();
-        for(var f : fields) {
+public Function<MemorySegment, NativeStructure> unmarshal() {
+    return address -> {
+        NativeStructure structure = factory.get();
+        for(FieldMapping f : fields) {
             f.unmarshal(address, structure);
         }
         return structure;
-    }
+    };
 }
 ```
 
-Where the `factory` promotes the default constructor to a class member, since it is used both in this new code and previously to construct the field mappings.
+Note that the `factory` constructed above is also used here to instantiate the new structure instance.
 
 Diagnostic handlers can now be attached to the instance as before, which is very useful given the invasive changes being made to JOVE.
 
@@ -1818,45 +1802,62 @@ The `parameter` method is overloaded to accept a flag indicating whether a param
 ```java
 public Builder parameter(Class<?> type, boolean returned) {
     Transformer transformer = registry.get(type);
-    signature.add(new Parameter(transformer, returned));
+    signature.add(new NativeParameter(transformer, returned));
     return this;
 }
 ```
 
-Where `Parameter` is an internal record that composes a transformer and the flag:
-
-The provided arguments are _updated_ after invocation of the native method:
-
 ```java
-public Object invoke(Object[] args) {
-    Object[] foreign = marshal(args, Arena.ofAuto());
-    Object result = handle.invokeWithArguments(foreign);
-    update(foreign, args);
-    return returns.apply(result);
-}
-```
-
-Where by-reference arguments are _overwritten_ with the unmarshalled data:
-
-```java
-private void update(Object[] foreign, Object[] args) {
-    if(args == null) {
-        return;
-    }
-
-    for(int n = 0; n < args.length; ++n) {
-        if(signature[n].returned && Objects.nonNull(args[n])) {
-            switch(signature[n].transformer) {
-                case StructureTransformer struct -> struct.unmarshal(foreign[n], args[n]);
-                case ArrayTransformer array -> array.update(foreign[n], args[n]);
-                ...
-            }
+record NativeParameter(Transformer<?> transformer, boolean returned) {
+    private MemoryLayout layout() {
+        if(returned) {
+            return AddressLayout.ADDRESS;
+        }
+        else {
+            return transformer.layout();
         }
     }
 }
 ```
 
+```java
+public Object invoke(Object[] args) {
+    if(args == null) {
+        return null;
+    }
+
+    Object[] foreign = marshal(args, Arena.ofAuto());
+    Object result = handle.invokeWithArguments(foreign);
+    update(foreign, args);
+    return unmarshal(result);
+}
+```
+
+```java
+private void update(Object[] args, Object[] foreign) {
+    for(int n = 0; n < args.length; ++n) {
+        // Skip normal parameters
+        NativeParameter p = signature[n];
+        if(!p.returned) {
+            continue;
+        }
+
+        // Skip empty elements
+        if(Objects.isNull(args[n]) || MemorySegment.NULL.equals(foreign[n])) {
+            continue;
+        }
+
+        // Overwrite by-reference argument
+        ...
+    }
+}
+```
+
 Note that the framework assumes that the argument or array has already been instantiated prior to the method call, i.e. `null` parameters or array elements are ignored.
+
+/////////////////////
+
+
 
 ### Integration
 
@@ -1874,6 +1875,8 @@ interface Library {
 ```
 
 Other than refactoring the library the remainder of the `PhysicalDevice` class remains as-is.
+
+/////////////////////
 
 There are three by-reference use-cases to be addressed:
 

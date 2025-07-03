@@ -242,7 +242,7 @@ public static VulkanBuffer create(LogicalDevice dev, Allocator allocator, long l
     var info = new VkBufferCreateInfo();
     info.usage = new BitMask<>(props.usage());
     info.sharingMode = props.mode();
-    info.size = oneOrMore(len);
+    info.size = len;
 
     // Allocate buffer
     VulkanLibrary lib = dev.library();
@@ -622,21 +622,20 @@ public Pipeline pipeline(...) {
                 .index(0)
                 .stride((3 + 4) * Float.BYTES)
                 .build()
-            .attribute()            
-                // Position            
+            .attribute()            // Position            
                 .binding(0)
                 .location(0)
                 .format(VkFormat.R32G32B32_SFLOAT)
                 .offset(0)
                 .build()
-            .attribute()
-                // Colour
+            .attribute()            // Colour
                 .binding(0)
                 .location(1)
                 .format(VkFormat.R32G32B32A32_SFLOAT)
                 .offset(3 * Float.BYTES)
                 .build()
             .build()
+}
 ```
 
 There is a lot of mucking about and hard-coded data here that will be addressed in the next chapter.

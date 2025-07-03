@@ -77,10 +77,13 @@ public static class Builder {
 }
 ```
 
-Where `DONT_CARE` is a convenience load-store constant:
+Where `DONT_CARE` is a constant:
 
 ```java
-private static final LoadStore DONT_CARE = new LoadStore(VkAttachmentLoadOp.DONT_CARE, VkAttachmentStoreOp.DONT_CARE);
+private static final LoadStore DONT_CARE = new LoadStore(
+        VkAttachmentLoadOp.DONT_CARE,
+        VkAttachmentStoreOp.DONT_CARE
+);
 ```
 
 Finally a convenience factory method is added for the common case of a colour attachment for presentation:
@@ -105,24 +108,6 @@ public class Subpass {
 }
 ```
 
-A colour attachment can be added to the subpass:
-
-```java
-public Subpass colour(Reference ref) {
-    this.colour.add(ref);
-    return this;
-}
-```
-
-And similarly for the single depth-stencil attachment:
-
-```java
-public Subpass depth(Reference ref) {
-    this.depth = notNull(ref);
-    return this;
-}
-```
-
 Where a `Reference` is a wrapper for a referenced attachment used in the subpass:
 
 ```java
@@ -133,7 +118,9 @@ public static class Reference {
 }
 ```
 
-The descriptor for each attachment reference is populated thus:
+The purpose of the `index` field is detailed below.
+
+The descriptor for each reference is populated thus:
 
 ```java
 void populate(VkAttachmentReference ref) {
@@ -142,9 +129,7 @@ void populate(VkAttachmentReference ref) {
 }
 ```
 
-The purpose of the `index` field is detailed below.
-
-Finally the descriptor for the subpass is populated as follows:
+And the descriptor for the subpass is initialised as follows:
 
 ```java
 void populate(VkSubpassDescription descriptor) {
@@ -218,7 +203,7 @@ The resultant attachments and subpasses are added to the create descriptor for t
 ```java
 // Init render pass descriptor
 var info = new VkRenderPassCreateInfo();
-info.flags = 0;         // Reserved
+info.flags = 0;
 
 // Add attachments
 info.attachmentCount = attachments.size();
@@ -361,16 +346,15 @@ Although we are perhaps half-way to our goal of rendering a triangle it is alrea
 
 * The main application code is one large, imperative method that is difficult to navigate.
 
-* The nature of a Vulkan application means that the various collaborating components are inherently highly inter-dependant, we are forced to structure the logic based on the inter-dependencies resulting in convoluted and brittle code.
+* The nature of a Vulkan application means that the various collaborating components are inherently highly inter-dependant, resulting in convoluted and brittle code.
 
-* All components are created and managed in a single source file rather than being factoring out to discrete, coherent classes.
+* Testing individual application components is virtually impossible.
 
-* The maintenance situation will get worse as more code is added to the demo.
+* This maintenance situation will only get worse as more code is added to the demo.
 
-The obvious solution is to use _dependency injection_ freeing development to focus on each component in relative isolation.
-For this we will use [Spring Boot](https://spring.io/projects/spring-boot) which is one of the most popular and best supported dependency injection frameworks.
+The obvious solution is to use _dependency injection_ such that application code can be factored out as discrete, coherent components that are easier to test.
 
-Note that only the demo applications will be dependant on Spring and not the JOVE library itself.
+For this we will use [Spring Boot](https://spring.io/projects/spring-boot) which is one of the most popular and best supported dependency injection frameworks.  Note that only the demo applications will be dependant on Spring and not the JOVE library itself.
 
 ### Project
 
@@ -387,7 +371,7 @@ public class TriangleDemo {
 
 This should run the new application though it obviously doesn't do anything yet.
 
-Spring Boot is essentially a _container_ for the components that comprise the application, and is responsible for handling the lifecycle of each component and _auto-wiring_ the dependencies at instantiation time.
+Spring is essentially a _container_ for the components that comprise the application, and is responsible for handling the lifecycle of each component and _auto-wiring_ the dependencies at instantiation time.
 
 When the application is started Spring performs a _component scan_ of the project to identify the _beans_ to be managed by the container, which by default starts at the package containing the main class.
 
@@ -399,7 +383,7 @@ class DesktopConfiguration {
     @Bean
     public static Desktop desktop() {
         Desktop desktop = Desktop.create();
-        if(!desktop.isVulkanSupported()) throw new RuntimeException("Vulkan not supported");
+        if(!desktop.isVulkanSupported()) throw new RuntimeException(...);
         return desktop;
     }
 
@@ -431,9 +415,9 @@ Here we can see the benefits of using dependency injection:
 
 * Note that Spring beans are generally singleton instances.
 
-This should result in code that is both simpler to develop and (more importantly) considerably easier to maintain.  In particular we no longer need to be concerned about inter-dependencies when components are added or refactored.
+This should result in code that is both simpler to develop and (more importantly) considerably easier to maintain and test.
 
-However one disadvantage of this approach is that the swapchain cannot be easily recreated when it is invalidated, e.g. when the window is minimised or resized.  This functionality is deferred to a future chapter.
+One minor disadvantage of this approach is that the swapchain cannot be easily recreated when it is invalidated, e.g. when the window is minimised or resized.  This functionality is deferred to a future chapter.
 
 ### Integration
 

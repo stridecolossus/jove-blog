@@ -560,7 +560,7 @@ public class Registry {
      * @throws IllegalArgumentException if the type is not supported
      */
     public Transformer<?> transformer(Class<?> type) {
-        final Transformer<?> transformer = registry.get(type);
+        Transformer<?> transformer = registry.get(type);
         if(transformer == null) throw new IllegalArgumentException(...);
         return transformer;
     }
@@ -647,11 +647,11 @@ public class StringTransformer implements Transformer<String> {
 }
 ```
 
-The `allocateFrom` helper method is used to allocate the off-heap memory for a given string.
+Where the `allocateFrom` helper allocates the off-heap memory for a given string.
 
 #### Domain Types
 
-The JOVE `Handle` is reimplemented as an opaque, immutable wrapper for an FFM pointer:
+A JOVE `Handle` is reimplemented as an opaque, immutable wrapper for an FFM pointer:
 
 ```java
 public final class Handle {
@@ -701,7 +701,7 @@ public interface NativeObject {
 
 Note that in this case the `unmarshal` method is disallowed since a JOVE object will never be returned from the native layer.
 
-To support custom JOVE and domain types that inherit from `NativeObject` the registry class is refactored:
+To support custom JOVE and domain types that inherit from `NativeObject` a second step is added to the registry:
 
 ```java
 public Transformer<?> transformer(Class<?> type) {
@@ -2223,6 +2223,14 @@ TODO
 TODO
 
  and remove the JNA artifacts (imports and the `@FieldOrder` annotation).
+
+### buffers
+
+replace byte buffers with FFM equivalents
+- device memory
+- VK buffers
+- Bufferable mechanism
+- etc
 
 ---
  

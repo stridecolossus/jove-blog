@@ -177,7 +177,7 @@ Note that the presented code represents the state of the JOVE library at that st
 
 Finally in this introductory chapter we cover the various supporting technologies, frameworks and libraries used in the JOVE project.
 
-On the face of it Java may seem an odd choice for a project which requires interacting with a very complex native library (not exactly a strength of Java).  However it the language with which we have most experience (both personal and professional) and as previously mentioned one of the interesting challenges is how to develop an OO project dependant on a C/C++ native, which is the focus of the next chapter.
+On the face of it Java may seem an odd choice for a project which requires interacting with a very complex native library (not exactly a strength of Java).  However it is the language with which we have most experience (both personal and professional) and as previously mentioned one of the interesting challenges is how to develop an OO project dependant on a C/C++ native, which is the focus of the next chapter.
 
 We develop using the latest stable JDK release supported by the IDE (Java 16 at the time of writing).  Although not particularly relevant to the blog our IDE of choice is Eclipse (mainly out of habit).
 
@@ -186,17 +186,14 @@ The JOVE library and associated demo applications are implemented as Maven proje
 Besides Vulkan itself the JOVE project also uses the following supporting libraries:
 
 | __dependency__ | __purpose__ |  __scope__ |
-| Apache Commons & Collections  | General helpful utilities and supporting classes | all |
-| Library                       | Argument validation (another personal project) | all |
-| JUnit                         | Unit-testing framework | testing |
-| Mockito                       | Mocking and stubbing | testing |
 | JNA                           | Interaction with native libraries | JOVE |
 | GLFW                          | Management of native windows and input-devices | JOVE |
+| JUnit                         | Unit-testing framework | testing |
+| Mockito                       | Mocking and stubbing | testing |
 | Spring Boot                   | Dependency injection | demos only |
 
 Where _scope_ indicates whether the library is used to support JOVE, unit-testing or demo applications.
 
 It can be assumed that all libraries use the latest stable release versions.
 
-Finally the blog is authored using _Markdown_ and hosted on [GitHub Pages](https://pages.github.com/) using [Jekyll](https://docs.github.com/en/pages/setting-up-a-github-pages-site-with-jekyll/creating-a-github-pages-site-with-jekyll) for rendering.  Where appropriate UML diagrams are used to illustrate how the various components collaborate, these diagrams are generated using [Mermaid](https://github.com/mermaid-js/mermaid).  However support for this extension is patchy at best and a browser extension may be required to properly render the diagrams.
-
+Finally the blog is authored using _Markdown_ and hosted on [GitHub Pages](https://pages.github.com/) using [Jekyll](https://docs.github.com/en/pages/setting-up-a-github-pages-site-with-jekyll/creating-a-github-pages-site-with-jekyll) for rendering.

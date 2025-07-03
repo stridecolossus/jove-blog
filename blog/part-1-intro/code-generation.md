@@ -36,25 +36,19 @@ A couple of examples:
 
 The first task for a Vulkan application is to create the _instance_ which involves populating a couple of structures and invoking the relevant API method.  The `VkApplicationInfo` structure specifies some properties of the application and the required API version.  The native structure has six fields whereas the LWJGL implementation has over 70 class members, the code assist popup in our IDE has scroll-bars, and this is one of the simplest structures.
 
-One of the fields in this structure is the application name which is a string (mapping to a native pointer to a null-terminated character array).  In the LWJGL implementation we had to instantiate a memory stack object, invoke a static method on a different utility class passing the stack and the string to allocate an NIO buffer, and then pass _that_ to the structure.  Presumably there are logical reasons for this (off-heap performance or thread safety perhaps) but there was no clue as to _why_ this had to be done, whether there were alternatives, was the application responsible for releasing resources later, etc.
+One of the fields in this structure is the application name which is a string (mapping to a native pointer to a null-terminated character array).  In the LWJGL implementation we had to instantiate a memory stack object, invoke a static method on a different utility class passing the stack and the string to allocate an NIO buffer, and then pass _that_ to the structure.  Presumably there are logical reasons for this (presumably management of off-heap memory and thread confinement), but there is no explanation or supporting documentation as to _why_ this had to be done, whether there were alternatives, was the application responsible for releasing resources later, etc.
 
-Obviously the LWJGL port was code-generated from the Vulkan header, and it is to be expected that there are oddities and compromises in the resultant API which could never be as 'clean' as a totally hand-crafted solution.  This is not intended to be a negative 'review' but an illustration of our concerns: everything took an age to implement, much of the code was basically a mystery, and we had barely scratched the surface of Vulkan.  Given how difficult and tedious it had been to implement even the most basic Vulkan demo using LWJGL, the prospect of doing the same for the much more complicated stuff later on was not appealing.  Eventually we just lost interest and gave up.
+Obviously the LWJGL port is code-generated from the Vulkan header, and it is to be expected that there are oddities and compromises in the resultant API which could never be as 'clean' as a totally hand-crafted solution.  This is not intended to be a negative 'review' but an illustration of our concerns: everything took an age to implement, much of the code was basically a mystery, and we had barely scratched the surface of Vulkan.  Given how difficult and tedious it had been to implement even the most basic Vulkan demo using LWJGL, the prospect of doing the same for the much more complicated stuff later on was not appealing.  Eventually we just lost interest and gave up.
 
 ### Alternatives
 
-Sometime later we were encouraged by a friend to make a second attempt.  Our first design decision was that unless LWJGL had materially changed we would look for alternative bindings.
-
-Unfortunately there were none (that we could find) so our focus shifted to implementing custom bindings to the native Vulkan library.
+Sometime later we were encouraged by a friend to make a second attempt.  Our first design decision was that unless LWJGL had materially changed we would look for alternative bindings.  Unfortunately there were none (that we could find) so our focus shifted to implementing custom bindings to the native Vulkan library.
 
 Straight JNI we immediately discounted - no one in their right mind would choose to implement JNI bindings for an API as large as Vulkan.  It had also been (thankfully) many years since we wrote any C/C++ code and we certainly didn't intend starting now.  Additionally JNI offers nothing to support the large number of enumerations and structures used by Vulkan.
 
-Project [Panama](https://openjdk.java.net/projects/panama/) is an on-going JSR for a programmatic pure-Java alternative to JNI, in particular it provides the `jextract` tool that generates an API from a native header file.  This is perfect for our requirements but there are some misgivings.  The API is _extremely_ complicated with a morass of code required to perform even the simplest call to the native layer.  Also at the time of writing the technology was still in a relatively immature and fluid state, required an incubator JVM build, and there was little in the way of tutorials or examples.
+Project [Panama](https://openjdk.java.net/projects/panama/) is an on-going JSR for a programmatic pure-Java alternative to JNI, in particular it provides the `jextract` tool that generates an API from a native header file.  This is perfect for our requirements but there are some misgivings: At the time of writing the technology was still in a relatively immature and fluid state, with little in the way of tutorials or examples.  Whilst the API is relatively small it is complex and additionally requires an incubator JVM build.  Attempting to take on __two__ new and evolving technologies seems a risk too far.  If and when Panama becomes a fully fledged JDK library with more support then it is likely to be the best solution.
 
-> If and when Panama becomes a fully fledged part of the JDK and there is more support in terms of documentation, tutorials, etc. then it it likely to be the best solution to our problem.
-
-Next we considered SWIG which is the code-generation technology used by LWJGL.  Again we were not encouraged, proprietary descriptors are required to bind to the native layer and we have already covered our issues with the resultant code.
-
-Finally we came across JNA (which was new to the author) and initial impressions were promising:
+Finally we came across JNA which was new to the author, initial impressions were promising:
 
 * The premise of auto-magically mapping Java interfaces to the native API seemed ideal, with no additional metadata or descriptors required.
 
@@ -68,15 +62,15 @@ We had a possible winner.
 
 ### JNA
 
-To see whether JNA would suit our purposes we first exercised it against a simpler library.  We had already planned to use [GLFW](https://www.glfw.org/) for desktop related functionality (such as creating native windows, managing input devices, etc) and it integrates nicely with Vulkan as we will see later.
+To see whether JNA would suit our purposes we first exercised it against a simpler native library.  We had already planned to use [GLFW](https://www.glfw.org/) for desktop related functionality (such as creating native windows, managing input devices, etc) and it integrates nicely with Vulkan as we will see later.
 
-With a hand-crafted implementation of the JNA library the bulk of what would become the _desktop_ package of JOVE was developed in a couple of hours, the progress reflecting our initial positive impressions of JNA:
+With a hand-crafted JNA implementation of the library the bulk of what would become the _desktop_ package of JOVE was developed in a couple of hours, the progress reflecting our initial positive impressions of JNA:
 
 * Defining a Java interface to represent the native API was relatively simple with JNA providing logical mappings to marshal between Java and native types.
 
 * Although structured data is not used much in GLFW using JNA structures was simple and straight-forward.
 
-* JNA also supports callbacks specified as Java interfaces.
+* JNA also supports callbacks which are used extensively by GLFW for device and UI event handlers.
 
 On a high we stripped LWJGL from the JOVE project and replaced it with hand-crafted JNA interfaces, enumerations and structures.  We progressed to the point of instantiating the logical device in the space of an hour or so without any of the road-blocks or surprises that LWJGL threw at us, despite the overhead of developing the API and structures as we went.
 
@@ -102,7 +96,7 @@ Having decided that JNA was the way forward some mechanism was needed to actuall
 
 First some requirements and constraints were established for the scope of the generator:
 
-1. The process will be considered complete once an acceptable proportion of the API has been generated, rather than attempting to cover every possible use-case.  i.e. avoid diminishing returns on the time and effort to cover every edge case.
+1. The process will be considered complete once an acceptable proportion of the API has been generated, i.e. avoid diminishing returns on the time and effort to cover every edge case.
 
 2. That said the generated code will be treated as read-only, we will attempt to avoid fiddling the generated source code where possible.
 
@@ -112,7 +106,7 @@ First some requirements and constraints were established for the scope of the ge
 
 5. Any tools and libraries should follow the general goal of being well-documented and supported.
 
-We had already identified the [JNAeator](https://github.com/nativelibs4java/jnaerator) tool that generates JNA bindings from a native library, apparently perfect for our requirements.  Unfortunately this tool produced a seemingly random package structure with the generated code looking more like the nasty SWIG bindings than the nice, neat code we had hand-crafted.  It also appeared to be inactive and the fact that it used other libraries that no longer existed was not encouraging.
+We had already identified the [JNAeator](https://github.com/nativelibs4java/jnaerator) tool that generates JNA bindings from a native library, apparently perfect for our requirements.  Unfortunately this tool produced a seemingly random package structure with the generated code looking more like the LWJGL bindings than the nice, neat code we had hand-crafted.  It also appeared to be inactive with some dependencies that no longer seemed to exist.
 
 ### CDT
 
@@ -769,7 +763,7 @@ In the end we decided not to code generate the API methods for a variety of reas
 
 * Unlike enumerations and structures which conform to a (relatively) simple set of 'rules', many of the Vulkan API methods have unique and complex behaviour.
 
-* We also anticipate that there will be a degree of experimentation to determine the best JNA mapping approach for each API method.  Preferably this would be tackled as those methods are iteratively introduced to JOVE, rather than attempting to understand and implement the entire API up-front.
+* We also anticipate that there will be a degree of experimentation to determine the best JNA mapping approach for each API method.  Preferably this would be tackled as those methods are iteratively introduced to JOVE, rather than attempting to understand and implement the entire API up-front or switched back-and-forth between projects.
 
 * Ideally related API methods will be grouped to break up the overall Vulkan API and to co-locate methods with the associated domain objects.  Obviously the C-based header has no notion of packaging (although the methods are grouped logically) so this would have to a manual process anyway.
 

@@ -8,6 +8,7 @@ title: Presentation
 
 - [Overview](#overview)
 - [Framework](#framework-enhancements)
+- [Rendering Surface](#rendering-surface)
 - [Swapchain](#swapchain)
 - [Improvements](#improvements)
 
@@ -15,21 +16,25 @@ title: Presentation
 
 ## Overview
 
-In the next couple of chapters we will implement the various components required for _presentation_ to the Vulkan surface.
+The next couple of chapters will cover development of the various components required for _presentation_ of rendered frames to the display.
 
-The first of these is the _swapchain_ which is the controller for the process of presenting frames to the display.  The swapchain is comprised of a number of image attachments that are the target of the rendering process.
+The first of these is the _swapchain_ which is the controller for the presentation process.  The swapchain comprises of a number of image _attachments_ that are the target of the rendering process.  Generally an application employs a double or triple-buffer strategy whereby a completed frame is presented to the screen while the next is being rendered, the buffers are swapped, and the process repeats for the next frame.  Additionally Vulkan is designed to allow these activities to be performed in parallel.
 
-Generally an application will employ a double or triple-buffer strategy where a completed frame is presented while the next is being rendered, the buffers are swapped, and the process repeats for the next frame.  Additionally Vulkan is designed to allow these activities to be performed in parallel.
+To configure presentation we take advantage of the Vulkan integration in GLFW.  The _desktop_ library is extended to create an application window that supports a Vulkan _rendering surface_.  This demo will also build upon the previous chapter to select a device that supports presentation to that surface.
 
 The following new components are required:
 
-* The swapchain domain class.
+* A GLFW window.
 
-* A mechanism for querying the physical capabilities of the graphics hardware in order to configure presentation.
+* The Vulkan _surface_ derived from the window.
 
-* New types for Vulkan images and views that are used to implement the attachments.
+* Selection of a device that supports presentation to the surface.
+
+* The swapchain domain class itself including new types to support the image attachments.
 
 First several new framework components are introduced that will be used in the new presentation functionality.
+
+> Note that Vulkan extensions _could_ have been used to implement the surface from the ground up but it makes sense to take advantage of the platform-independant implementation offered by GLFW.  The disadvantage of this approach is that the logic becomes a little convoluted (as will be seen) since the surface, instance and physical device become slightly inter-dependant, but this seems an acceptable trade-off.
 
 ---
 
@@ -66,7 +71,10 @@ public final class Handle {
 
     @Override
     public boolean equals(Object obj) {
-        return (obj == this) || (obj instanceof Handle that) && this.ptr.equals(that.ptr);
+        return
+            (obj == this) ||
+            (obj instanceof Handle that) &&
+            this.ptr.equals(that.ptr);
     }
 
     @Override
@@ -145,12 +153,8 @@ The following template implementation encapsulates a handle and manages the proc
 
 ```java
 public abstract class AbstractTransientNativeObject implements TransientNativeObject {
-    protected final Handle handle;
+    private final Handle handle;
     private boolean destroyed;
-
-    protected AbstractTransientNativeObject(Handle handle) {
-        this.handle = notNull(handle);
-    }
 
     @Override
     public Handle handle() {
@@ -194,7 +198,7 @@ public abstract class AbstractVulkanObject extends AbstractTransientNativeObject
 
     protected AbstractVulkanObject(Pointer handle, LogicalDevice dev) {
         super(new Handle(handle));
-        this.dev = notNull(dev);
+        this.dev = dev;
     }
 }
 ```
@@ -236,38 +240,186 @@ public void destroy() {
 
 ---
 
-## Swapchain
+## Rendering Surface
+
+### Application Window
+
+Implementation of the presentation process starts with a new domain class for the application window:
+
+```java
+public class Window extends TransientNativeObject {
+    private final Desktop desktop;
+
+    Window(Handle window, Desktop desktop) {
+        super(window);
+        this.desktop = desktop;
+    }
+
+    @Override
+    public void destroy() {
+        lib.glfwDestroyWindow(handle);
+    }
+}
+```
+
+A companion builder configures the properties of the window:
+
+```java
+public static class Builder {
+    private String title;
+    private Dimensions size;
+    private final Map<Hint, Integer> hints = new HashMap<>();
+}
+```
+
+The visual properties of the window (_hints_ in GLFW parlance) are copied from the header and wrapped into the following enumeration:
+
+```java
+public enum Hint {
+    RESIZABLE(0x00020003),
+    DECORATED(0x00020005),
+    AUTO_ICONIFY(0x00020006),
+    MAXIMISED(0x00020008),
+    CLIENT_API(0x00022001);
+
+    private final int hint;
+}
+```
+
+The `CLIENT_API` hint suppresses the automatic creation of an OpenGL rendering surface which is the default behaviour (the _hint_ argument is exposed for this reason).
+
+In the `build` method the windows hints are applied _prior_ to creating the window:
+
+```java
+public Window build(Desktop desktop) {
+    DesktopLibrary lib = desktop.library();
+    lib.glfwDefaultWindowHints();
+    for(var entry : hints.entrySet()) {
+        Hint hint = entry.getKey();
+        int arg = entry.getValue();
+        lib.glfwWindowHint(hint, arg);
+    }
+    ...
+}
+```
+
+Next the window itself is instantiated:
+
+```java
+Handle window = lib.glfwCreateWindow(size.width(), size.height(), descriptor.title(), null, null);
+if(window == null) throw new RuntimeException(...);
+```
+
+And wrapped into the domain object:
+
+```java
+return new Window(window, desktop);
+```
+
+A handle to the Vulkan rendering surface can then be retrieved from the window via a new accessor:
+
+```java
+public Handle surface(Handle instance) {
+    DesktopLibrary lib = desktop.library();
+    var ref = new PointerByReference();
+    int result = lib.glfwCreateWindowSurface(instance, this, null, ref);
+    if(result != 0) throw new RuntimeException(...);
+    return ref.get();
+}
+```
+
+Finally the API methods are added to the GLFW library:
+
+```java
+Handle  glfwCreateWindow(int w, int h, String title, Handle monitor, Window shared);
+void    glfwDestroyWindow(Window window);
+void    glfwDefaultWindowHints();
+void    glfwWindowHint(int hint, int value);
+int     glfwCreateWindowSurface(Handle instance, Handle window, Handle allocator, PointerByReference surface);
+```
+
+Notes:
+
+* This is a bare-bones implementation sufficient for the triangle demo.
+
+* This implementation ignores display monitors for the moment.
+
+In the demo application a native window can now be created that supports Vulkan presentation:
+
+```java
+Window window = new Window.Builder()
+    .title("demo")
+    .size(new Dimensions(1280, 760))
+    .hint(Hint.CLIENT_API, 0)
+    .build(desktop);
+```
+
+And the handle to the Vulkan rendering surface is retrieved:
+
+```java
+Handle surface = window.surface(instance.handle());
+```
+
+### Device Selection
+
+The next step is to select the physical device that supports presentation to the rendering surface, handled by a second device selector implementation:
+
+```java
+public static Selector presentation(Handle surface) {
+    return new Selector() {
+        @Override
+        protected boolean matches(PhysicalDevice device, Family family) {
+            return device.isPresentationSupported(surface, family);
+        }
+    };
+}
+```
+
+Which matches a queue family against the surface handle:
+
+```java
+public boolean isPresentationSupported(Handle surface, Family family) {
+    var supported = new IntegerByReference();
+    vulkan.vkGetPhysicalDeviceSurfaceSupportKHR(this, family.index(), surface, supported);
+    return supported.get() == 1;
+}
+```
+
+The new API method is added to the library for the physical device:
+
+```java
+VkResult vkGetPhysicalDeviceSurfaceSupportKHR(PhysicalDevice device, int queueFamilyIndex, Handle surface, IntegerByReference supported);
+```
 
 ### Rendering Surface
 
-The swapchain is dependant on the physical capabilities of the graphics hardware such as supported image formats, presentation modes, etc.
-
-We start with a new domain class that wraps the rendering surface previously retrieved from GLFW:
+Configuration of the swapchain is dependant on the capabilities of the graphics hardware such as supported image formats, presentation modes, etc. which are dependant on the selected physical device.  As mentioned above, taking advantage of the platform-independant `glfwCreateWindowSurface` method couples the rendering surface, the device _and_ implicitly the Vulkan instance.  Therefore a new component is introduced that composes these dependencies:
 
 ```java
-public class Surface extends AbstractTransientNativeObject {
+public class Surface extends TransientNativeObject {
     private final PhysicalDevice dev;
+    private final Instance instance;
 
     public Surface(Handle surface, PhysicalDevice dev) {
         super(surface);
-        this.dev = notNull(dev);
+        this.dev = dev;
+        this.instance = dev.instance();
     }
 
     @Override
     protected void release() {
-        Instance instance = dev.instance();
-        VulkanLibrary lib = instance.library();
+        VulkanLibrary lib = dev.library();
         lib.vkDestroySurfaceKHR(instance, this, null);
     }
 }
 ```
 
-The surface class provides a number of accessors that are used to configure the swapchain.  The _surface capabilities_ specify minimum and maximum constraints on various aspects of the hardware, such as the number of frame buffers, the maximum dimensions of the image views, etc:
+The new class provides a number of accessors that are used to configure the swapchain.  The _surface capabilities_ specify minimum and maximum constraints on various aspects of the hardware, such as the number of frame buffers, the maximum dimensions of the image views, etc:
 
 ```java
 public VkSurfaceCapabilitiesKHR capabilities() {
     VulkanLibrary lib = dev.library();
-    VkSurfaceCapabilitiesKHR caps = new VkSurfaceCapabilitiesKHR();
+    var caps = new VkSurfaceCapabilitiesKHR();
     check(lib.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, this, caps));
     return caps;
 }
@@ -297,10 +449,10 @@ public Set<VkPresentModeKHR> modes() {
 }
 ```
 
-The presentation modes are returned as an integer array which is mapped to the corresponding enumeration:
+The presentation modes are returned as an integer array which is transformed to the corresponding enumeration:
 
 ```java
-var mapping = IntEnum.mapping(VkPresentModeKHR.class);
+var mapping = new ReverseMapping<>(VkPresentModeKHR.class);
 return Arrays
     .stream(array)
     .mapToObj(mapping::map)
@@ -314,11 +466,65 @@ public interface Library {
     int  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(PhysicalDevice device, Surface surface, VkSurfaceCapabilitiesKHR caps);
     int  vkGetPhysicalDeviceSurfaceFormatsKHR(PhysicalDevice device, Surface surface, IntByReference count, VkSurfaceFormatKHR formats);
     int  vkGetPhysicalDeviceSurfacePresentModesKHR(PhysicalDevice device, Surface surface, IntByReference count, int[] modes);
-    void vkDestroySurfaceKHR(Instance instance, Surface surface, Pointer allocator);
-}
+    void vkDestroySurfaceKHR(Instance instance, Surface surface, Handle allocator);}
 ```
 
-Note that the API parameters are now expressed in terms of domain objects rather than JNA pointers thanks to the framework introduced earlier.
+Note that the API is expressed in terms of domain objects rather than JNA pointers thanks to the framework introduced earlier.
+
+### Integration
+
+The new presentation functionality is integrated into the demo application to select an appropriate device and create a rendering surface that will be used by the swapchain in the next section.
+
+A second selector is added to find a device that supports that supports the requirements of the triangle demo:
+
+```java
+Selector graphics = Selector.queue(VkQueueFlag.GRAPHICS);
+Selector presentation = Selector.presentation(handle);
+```
+
+Which are used to select the device from those available:
+
+```java
+PhysicalDevice physical = PhysicalDevice
+    .devices(instance)
+    .filter(graphics)
+    .filter(presentation)
+    .findAny()
+    .orElseThrow();
+```
+
+The queue families are then extracted from the selected device:
+
+```java
+Family graphicsFamily = graphics.select(physical);
+Family presentationFamily = presentation.select(physical);
+```
+
+Note that the resultant families could actually refer to the same object depending on the hardware implementation.
+
+Finally the rendering surface handle is wrapped by the new domain object:
+
+```java
+Surface surface = new Surface(handle, instance, physical);
+```
+
+In summary, the inter-dependencies between the various components when creating the rendering surface are as follows:
+
+1. Check whether Vulkan is supported by the hardware: `glfwVulkanSupported`
+
+2. Create the Vulkan instance and an application window (with OpenGL disabled).
+
+3. Retrieve a handle to the surface from the window given the instance.
+
+4. Select a physical device that supports presentation to the surface: `vkGetPhysicalDeviceSurfaceSupportKHR`
+
+5. Create the surface domain object.
+
+With the rendering surface in place we can move onto the swapchain itself.
+
+---
+
+## Swapchain
 
 ### Images
 
@@ -360,11 +566,6 @@ An _image view_ is the entry-point for operations on an image such as layout tra
 public class View extends AbstractVulkanObject {
     private final Image image;
     
-    View(Pointer handle, LogicalDevice dev, Image image) {
-        super(handle, dev);
-        this.image = notNull(image);
-    }
-
     @Override
     protected Destructor<View> destructor(VulkanLibrary lib) {
         return lib::vkDestroyImageView;
@@ -458,7 +659,7 @@ With the above in place the swapchain itself can now be implemented:
 public class Swapchain extends AbstractVulkanObject {
     private final VkFormat format;
     private final Dimensions extents;
-    private final List<View> attachments;
+    private final List<View> views;
 
     @Override
     protected Destructor<Swapchain> destructor(VulkanLibrary lib) {
@@ -467,7 +668,9 @@ public class Swapchain extends AbstractVulkanObject {
 
     @Override
     protected void release() {
-        views.forEach(View::destroy);
+        for(View view : views) {
+            view.destroy();
+        }
     }
 }
 ```
@@ -487,8 +690,8 @@ The surface capabilities are queried from the surface in the constructor:
 
 ```java
 public Builder(LogicalDevice dev, Surface surface) {
-    this.dev = notNull(dev);
-    this.surface = notNull(surface);
+    this.dev = dev;
+    this.surface = surface;
     this.caps = surface.capabilities();
     init();
 }
@@ -661,10 +864,9 @@ Notes:
 
 ### Format Builder
 
-When developing the swapchain we realised that finding an image `VkFormat` can be difficult given the size of the enumeration.
-However the naming convention is highly consistent and it is therefore possible to specify the format programatically.
+When developing the swapchain we realised that finding an image `VkFormat` can be difficult given the size of the enumeration.  However the naming convention is highly consistent and it is therefore possible to specify the format _name_ programatically and lookup the relevant enumeration constant.
 
-The following helper class allows an application to specify the various components of a required format:
+The following helper class allows an application to specify the various components of the required format:
 
 ```java
 public class FormatBuilder {
@@ -695,7 +897,7 @@ The builder constructs the format name and looks up the resultant enumeration co
 ```java
 public VkFormat build() {
     // Build component layout
-    StringBuilder layout = new StringBuilder();
+    var layout = new StringBuilder();
     int size = bytes * Byte.SIZE;
     for(int n = 0; n < count; ++n) {
         layout.append(template.charAt(n));
@@ -782,9 +984,13 @@ This type converter is registered with the JNA library solving the mapping probl
 
 ## Summary
 
-In this chapter we:
+This chapter covered the implementation of various components to support presentation:
 
-* Implemented the swapchain and image/views to support presentation to the rendering surface.
+* The GLFW window.
 
-* Introduced a number of framework improvements to abstract common patterns.
+* The Vulkan rendering surface and device selection.
+
+* Implementation of the swapchain and image/views.
+
+* A number of framework improvements to abstract common patterns.
 

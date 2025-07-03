@@ -362,7 +362,7 @@ To test the view transform matrix, in the `matrix` bean the eye position (or cam
 ```java
 Matrix trans = new Matrix.Builder()
     .identity()
-    .column(3, new Point(1, 0, 0))
+    .column(3, new Vector(1, 0, 0))
     .build();
 ```
 

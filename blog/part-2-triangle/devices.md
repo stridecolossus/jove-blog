@@ -17,7 +17,7 @@ title: Vulkan Devices
 
 Hardware components that support Vulkan are represented by a _physical device_ which defines the capabilities of that component (rendering, data transfer, etc).  In general there will be a single physical device (i.e. the GPU) or perhaps also an on-board graphics device for a laptop.
 
-A _logical device_ is an instance of a physical device and is the central component for all subsequent Vulkan functionality.  The logical device also exposes a number of asynchronous _work queues_ that are used for various tasks such as invoking rendering, transferring data to/from the hardware, etc.
+A _logical device_ is an instance of a physical device and is the central component for all subsequent Vulkan functionality.  The logical device exposes a number of asynchronous _work queues_ that are used for various tasks such as invoking rendering, transferring data to/from the hardware, etc.
 
 Creating the logical device consists of the following steps:
 
@@ -31,13 +31,15 @@ Creating the logical device consists of the following steps:
 
 The process of displaying a rendered frame is known as _presentation_ and is implemented by Vulkan as a task on a presentation queue.  The demo requires a device that supports presentation so the _desktop_ library will be extended to create a window with a Vulkan rendering surface.
 
+Finally some framework enhancements are introduced to support common patterns that appeared during implementation.
+
 ---
 
 ## Physical Devices
 
-### Device and Queues
+### Devices and Queues
 
-We first implement new domain objects for the physical device and the supported work queues:
+First a new domain object is defined for the physical device and its supported work queues:
 
 ```java
 public class PhysicalDevice {
@@ -51,22 +53,17 @@ The physical device specifies a number of _queue families_ that define the capab
 
 ```java
 public record Queue(Pointer handle, Family family) {
-    /**
-     * A <i>queue family</i> defines the properties of a group of queues.
-     */
     public record Family(int index, int count, Set<VkQueueFlag> flags) {
         public Family {
-            Check.zeroOrMore(index);
-            Check.oneOrMore(count);
             flags = Set.copyOf(flags);
         }
     }
 }
 ```
 
-Note that the constructor for the family copies the set of queue flags and rewrites the constructor argument.  This is the standard approach for ensuring that a record class is immutable, although unfortunately this is currently flagged as a warning in our IDE.
+Where _index_ is a numeric identifier and _count_ is the number of queue instances.
 
-The queue also provides a method to block until all work has been processed:
+Queues can also be blocked until all work has been processed by that queue:
 
 ```java
 public record Queue {
@@ -82,7 +79,7 @@ To enumerate the available physical devices the `vkEnumeratePhysicalDevices` API
 
 1. Once to retrieve the number of available devices via an integer-by-reference value (the array parameter is set to `null`).
 
-2. Again to retrieve the actual array of device handles.
+2. And again to retrieve the actual array of device handles.
 
 This process is wrapped in the following factory method:
 
@@ -105,7 +102,7 @@ public static Stream<PhysicalDevice> devices(Instance instance) {
 }
 ```
 
-The `create` method is a helper that first retrieves the array of queue families for each device:
+The `create` method first retrieves the array of queue families for each device:
 
 ```java
 private static PhysicalDevice create(Pointer handle, Instance instance) {
@@ -128,7 +125,7 @@ private static PhysicalDevice create(Pointer handle, Instance instance) {
 }
 ```
 
-Note that again the same API method is invoked twice to retrieve the queue families.  However in this case the JNA `toArray` factory method is invoked on an instance of a `VkQueueFamilyProperties` structure to allocate the array and the _first_ element is passed to the API method (i.e. a native pointer to array of structures).  This common pattern will be abstracted at the end of the chapter.
+Again the same API method is invoked twice to retrieve the queue families.  However in this case the JNA `toArray` factory method is invoked on an _instance_ of a `VkQueueFamilyProperties` structure to allocate the array and the __first__ element is passed to the API (i.e. a pointer to an array of structures).  This common pattern will be abstracted at the end of the chapter.
 
 Another helper is implemented to create a queue family domain object:
 
@@ -149,13 +146,13 @@ List<Family> families = IntStream
     .toList();
 ```
 
-And finally the device domain object is instantiated:
+And finally the device is instantiated:
 
 ```java
 return new PhysicalDevice(handle, instance, families);
 ```
 
-The physical device exposes a set of properties containing the name and type of the device, hardware limits, etc:
+The device exposes a set of properties that specify the name and type of the device, hardware limits, etc:
 
 ```java
 public VkPhysicalDeviceProperties properties() {
@@ -185,239 +182,71 @@ PhysicalDevice
     .forEach(System.out::println);
 ```
 
-### Application Window
+### Device Selection
 
-To select the physical device that supports presentation a Vulkan surface is needed, which is dependant on a native window created using GLFW:
+To select a physical device that supports the requirements of a given application a filter is applied to the queue families supported by each device.  However the mechanism used by Vulkan requires this test to be applied twice: once to select the device matching the filter, and again to retrieve the matched queue family when configuring the logical device.  After trying several approaches we settled on the design described below which determines the matching family as a _side effect_ of selecting the device (the same approach is used in the tutorial). This is generally something to avoid but seems acceptable in this case and is at least relatively simple from the perspective of the application.
+
+The filter is essentially a binary predicate on the device and its supported queues:
 
 ```java
-public class Window {
-    private final Desktop desktop;
-    private final Pointer handle;
-    private final Descriptor descriptor;
-
-    public void destroy() {
-        lib.glfwDestroyWindow(handle);
-    }
+public static abstract class Selector implements Predicate<PhysicalDevice> {
+    /**
+     * Matches this selector.
+     * @param device Physical device
+     * @param family Queue family
+     * @return Whether matched
+     */
+    protected abstract boolean matches(PhysicalDevice device, Family family);
 }
 ```
 
-The _window descriptor_ wraps up the properties of the window in a simple record:
+The filter enumerates the queue families provided by each device and records the matched results:
 
 ```java
-public record Descriptor(String title, Dimensions size, Set<Hint> hints)
-```
-
-The visual properties of a window (_hints_ in GLFW parlance) are copied from the header and wrapped into the following enumeration:
-
-```java
-public enum Hint {
-    RESIZABLE(0x00020003),
-    DECORATED(0x00020005),
-    AUTO_ICONIFY(0x00020006),
-    MAXIMISED(0x00020008),
-    DISABLE_OPENGL(0x00022001);
-
-    private final int hint;
-}
-```
-
-By default GLFW creates an OpenGL surface for a new window which needs to be disabled for a Vulkan-based application.  However the argument for the `DISABLE_OPENGL` hint is irritatingly the opposite of what one would expect (and all the others), therefore the argument is over-ridden in this case:
-
-```java
-public enum Hint {
-    ...
-    DISABLE_OPENGL(...) {
-        protected int argument() {
-            return 0;
-        }
-    };
-
-    protected int argument() {
-        return 1;
-    }
-
-    void apply(DesktopLibrary lib) {
-        lib.glfwWindowHint(hint, argument());
-    }
-}
-```
-
-The window is created via a factory method given a descriptor, starting with the specified hints:
-
-```java
-public static Window create(Desktop desktop, Descriptor descriptor) {
-    DesktopLibrary lib = desktop.library();
-    lib.glfwDefaultWindowHints();
-    for(Hint hint : descriptor.hints) {
-        p.apply(lib);
-    }
-    ...
-}
-```
-
-Next the GLFW method is invoked to create the window:
-
-```java
-Dimensions size = descriptor.size();
-Pointer window = lib.glfwCreateWindow(size.width(), size.height(), descriptor.title(), null, null);
-if(window == null) throw new RuntimeException();
-```
-
-And finally the domain object is instantiated:
-
-```java
-return new Window(desktop, window, descriptor);
-```
-
-Notes:
-
-* This is a bare-bones implementation sufficient for the triangle demo, however it will almost certainly need to be refactored to support richer functionality, e.g. full-screen windows.
-
-* A convenience builder is also added to create and configure a window.
-
-* The above implementation ignores display monitors for the moment.
-
-To create the Vulkan surface the following factory is added to the new class:
-
-```java
-public Pointer surface(Pointer instance) {
-    DesktopLibrary lib = desktop.library();
-    PointerByReference ref = new PointerByReference();
-    int result = lib.glfwCreateWindowSurface(instance, this.handle(), null, ref);
-    if(result != 0) throw new RuntimeException();
-    return ref.getValue();
-}
-```
-
-In the demo we can now create a native window:
-
-```java
-Window window = new Window.Builder()
-    .title("demo")
-    .size(new Dimensions(1280, 760))
-    .hint(Window.Hint.DISABLE_OPENGL)
-    .build(desktop);
-```
-
-And then retrieve the handle to the Vulkan surface:
-
-```java
-Pointer surface = window.surface(instance.handle());
-```
-
-The API methods for GLFW windows and the surface are added to the JNA library:
-
-```java
-Pointer glfwCreateWindow(int w, int h, String title, Pointer monitor, Pointer shared);
-void    glfwDestroyWindow(Pointer window);
-void    glfwDefaultWindowHints();
-void    glfwWindowHint(int hint, int value);
-int     glfwCreateWindowSurface(Pointer instance, Pointer window, Pointer allocator, PointerByReference surface);
-```
-
-### Selector
-
-Note that we _could_ have used Vulkan extensions to implement the surface from the ground up but it makes sense to take advantage of the platform-independant implementation.  The disadvantage of this approach is that the logic becomes a little convoluted as the surface and Vulkan components are slightly inter-dependant, but this seems an acceptable trade-off.
-
-This complexity is exacerbated by the mechanism Vulkan uses to select the work queues which essentially requires the same logic to be applied twice: once to select the physical device with the required queue capabilities, and again to retrieve each queue from the resultant logical device.
-
-After trying several approaches we settled on the design described below which determines the queue family as a _side effect_ of selecting the device (the same approach is used in the tutorial). This is something we would generally try to avoid but it seems acceptable in this case, and the resultant API is at least relatively simple from the perspective of the user.
-
-The _selector_ composes a predicate for a device and queue family and exposes methods for both cases:
-
-```java
-public static class Selector implements Predicate<PhysicalDevice> {
-    private final BiPredicate<PhysicalDevice, Family> predicate;
+public static abstract class Selector implements Predicate<PhysicalDevice> {
+    private final Map<PhysicalDevice, Family> results = new HashMap<>();
 
     @Override
-    public boolean test(PhysicalDevice dev) {
-        return find(dev).isPresent();
-    }
-
-    public Family select(PhysicalDevice dev) {
-        return find(dev).orElseThrow();
-    }
-
-    private Optional<Family> find(PhysicalDevice dev) {
-        ...
+    public boolean test(PhysicalDevice device) {
+        return device
+            .families
+            .stream()
+            .filter(family -> matches(device, family))
+            .peek(match -> results.put(device, match))
+            .findAny()
+            .isPresent();
     }
 }
 ```
 
-The `find` method applies the predicate and caches the results:
+Note the `peek` clause in the stream processor which records matching queue families as a side-effect.
+
+The matched family can be queried later from the selected device:
 
 ```java
-private final Map<PhysicalDevice, Optional<Family>> results = new HashMap<>();
-
-private Optional<Family> find(PhysicalDevice dev) {
-    return results.computeIfAbsent(dev, this::findLocal);
-}
-
-private Optional<Family> findLocal(PhysicalDevice dev) {
-    return dev
-        .families
-        .stream()
-        .filter(family -> predicate.test(dev, family))
-        .findAny();
+public Family select(PhysicalDevice device) {
+    Family family = results.get(device);
+    if(family == null) throw new UnsupportedOperationException();
+    return family;
 }
 ```
 
-Finally a factory method is added to create a selector that matches a device by queue properties:
+The following factory method creates a selector that matches a queue family by a set of required properties:
 
 ```java
-public static Selector of(VkQueueFlag... flags) {
-    var copy = Arrays.asList(flags);
-    BiPredicate<PhysicalDevice, Family> predicate = (ignored, family) -> family.flags().containsAll(copy);
-    return new Selector(predicate);
+public static Selector family(VkQueueFlag... flags) {
+    return new Selector() {
+        private final Set<VkQueueFlag> required = Set.of(flags);
+
+        @Override
+        protected boolean matches(PhysicalDevice device, Family family) {
+            return family.flags().containsAll(required);
+        }
+    };
 }
 ```
 
-And a second implementation that selects devices that support presentation to the given Vulkan surface:
-
-```java
-public static Selector of(Pointer surface) {
-    BiPredicate<PhysicalDevice, Family> predicate = (dev, family) -> dev.isPresentationSupported(surface, family);
-    return new Selector(predicate);
-}
-```
-
-Delegating to a new query method on the device:
-
-```java
-public boolean isPresentationSupported(Pointer surface, Family family) {
-    VulkanLibrary lib = instance.library();
-    IntByReference supported = instance.factory().integer();
-    check(lib.vkGetPhysicalDeviceSurfaceSupportKHR(this, family.index(), surface, supported));
-    return supported.getValue() == 1;
-}
-```
-
-Two selectors are created in the demo to find a matching physical device:
-
-```java
-// Select a device that supports rendering
-Selector graphics = Selector.of(VkQueueFlag.GRAPHICS);
-
-// Select a device that supports presentation
-Selector presentation = Selector.of(surface);
-
-// Find matching device
-PhysicalDevice gpu = PhysicalDevice
-    .devices(instance)
-    .filter(graphics)
-    .filter(presentation)
-    .findAny()
-    .orElseThrow(() -> new RuntimeException(...));
-```
-
-Finally the queue families can then be queried from the selectors:
-
-```java
-Family graphicsFamily = graphics.select(gpu);
-Family presentationFamily = presentation.select(gpu);
-```
-
-Note that the resultant families could actually refer to the same object depending on the hardware implementation.
+Additional selector implementations will be added in subsequent chapters.
 
 ---
 
@@ -440,7 +269,15 @@ public class LogicalDevice {
 }
 ```
 
-The logical device is another object that is highly configurable and is therefore constructed via a builder:
+The whole device can also be blocked until all queues have finished processing:
+
+```java
+public void waitIdle() {
+    check(lib.vkDeviceWaitIdle(handle));
+}
+```
+
+The logical device is another object that is highly configurable and therefore constructed via a builder:
 
 ```java
 public static class Builder {
@@ -453,7 +290,7 @@ public static class Builder {
 
 Note that extensions and validation layers can be configured at both the instance and device level, however more recent Vulkan implementations will ignore layers specified at the device level (both are retained for backwards compatibility).
 
-The work queues that are required by the logical device are specified by a new transient type:
+The work queues required by the logical device are specified by a new transient type:
 
 ```java
 public record RequiredQueue(Family family, List<Percentile> priorities)
@@ -461,11 +298,11 @@ public record RequiredQueue(Family family, List<Percentile> priorities)
 
 Where:
 
-- The _family_ is a queue family selected from the parent physical device.
+- The _family_ is one of the queue families specified by the parent physical device.
 
-- The _priorities_ is a list of percentile values that specifies the required number of queues in the family and their relative priorities.
+- The _priorities_ is a list of percentile values that specify the required number of queues in the family and their relative priorities.
 
-- A `Percentile` is a custom numeric type for a percentile represented as a 0..1 floating-point value.
+- A `Percentile` is a custom numeric type for a percentile represented as a `0..1` floating-point value.
 
 The `build` method populates the descriptor for the logical device:
 
@@ -563,43 +400,9 @@ And finally the builder creates the domain object for the new device:
 return new LogicalDevice(handle.getValue(), parent, map);
 ```
 
-In the demo we can now create the logical device:
+### Integration
 
-```java
-LogicalDevice dev = new LogicalDevice.Builder(gpu)
-    .extension(VulkanLibrary.EXTENSION_SWAP_CHAIN)
-    .layer(ValidationLayer.STANDARD_VALIDATION)
-    .queue(graphicsFamily)
-    .queue(presentationFamily)
-    .build();
-```
-
-And then retrieve the work queues:
-
-```java
-Queue graphicsQueue = dev.queue(graphicsFamily);
-Queue presentationQueue = dev.queue(presentationFamily);
-```
-
-Which uses the following convenience accessor to retrieve the first queue for a given family:
-
-```java
-public Queue queue(Family family) {
-    List<Queue> list = queues.get(family);
-    if((list == null) || list.isEmpty()) throw new IllegalArgumentException();
-    return list.get(0);
-}
-```
-
-The whole device can be blocked until all queues have been processed:
-
-```java
-public void waitIdle() {
-    check(lib.vkDeviceWaitIdle(handle));
-}
-```
-
-The new API is implemented as an inner class of the logical device:
+The new API methods are implemented as an inner class of the logical device:
 
 ```java
 interface Library {
@@ -611,13 +414,13 @@ interface Library {
 }
 ```
 
-The various API interfaces are then integrated into the main Vulkan library:
+The various API interfaces are then aggregated into the overall Vulkan library:
 
 ```java
 public interface VulkanLibrary extends Library, DeviceLibrary, ...
 ```
 
-Where convenient intermediate interfaces aggregate multiple JNA libraries, e.g. for the various device libraries:
+Where convenient intermediate interfaces group multiple JNA libraries, e.g. for the various device libraries:
 
 ```java
 interface DeviceLibrary extends Instance.Library, PhysicalDevice.Library, LogicalDevice.Library
@@ -625,23 +428,55 @@ interface DeviceLibrary extends Instance.Library, PhysicalDevice.Library, Logica
 
 From now we take this approach of implementing API libraries as inner classes of the companion domain object, co-locating each API with its associated class and reducing the number of super-interfaces for the root Vulkan library.
 
+In the demo a selector is defined to find a physical device that supports rendering:
+
+```java
+Selector selector = Selector.queue(VkQueueFlag.GRAPHICS);
+```
+
+From which the appropriate device can be selected:
+
+```java
+PhysicalDevice physical = PhysicalDevice
+    .devices(instance)
+    .filter(selector)
+    .findAny()
+    .orElseThrow();
+```
+
+Next the logical device is constructed with a rendering queue:
+
+```java
+LogicalDevice device = new LogicalDevice.Builder(gpu)
+    .extension(VulkanLibrary.EXTENSION_SWAP_CHAIN)
+    .layer(ValidationLayer.STANDARD_VALIDATION)
+    .queue(selector)
+    .build();
+```
+
+And finally the actual queue instance can be retrieved:
+
+```java
+Queue queue = device.queue(selector).getFirst();
+```
+
 ---
 
 ## Improvements
 
 ### Two-Stage Invocation
 
-When enumerating the physical devices we first came across API methods that are invoked __twice__ to retrieve data from Vulkan, usually an array of structures or pointer handles.
+When enumerating the physical devices we first came across API methods that are invoked __twice__ to retrieve data from Vulkan.
 
 The process is generally:
 
-1. Invoke an API method with an integer-by-reference _count_ to determine the size of the results, with the data argument set to `null`.
+1. Invoke the API method with an integer-by-reference _count_ to determine the size of the results, with the data argument set to `null`.
 
-2. Allocate the data or array accordingly.
+2. Allocate the 'container' accordingly, usually an array of structures or pointer handles.
 
 3. Invoke again passing both the count and the allocated object to populate the returned results.
 
-This is a common pattern across the Vulkan API which we refer to as _two-stage invocation_.
+This is a common pattern across the Vulkan API which we rather grandiosely refer to as _two-stage invocation_.
 
 The following interface abstracts an API method that employs two-stage invocation:
 

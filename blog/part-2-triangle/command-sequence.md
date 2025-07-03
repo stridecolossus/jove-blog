@@ -103,11 +103,6 @@ The command pool is tackled first:
 class Pool extends AbstractVulkanObject {
     private final WorkQueue queue;
 
-    private Pool(Pointer handle, LogicalDevice dev, WorkQueue queue) {
-        super(handle, dev);
-        this.queue = notNull(queue);
-    }
-
     @Override
     protected Destructor<Pool> destructor(VulkanLibrary lib) {
         return lib::vkDestroyCommandPool;
@@ -140,8 +135,8 @@ Command buffers can then be allocated from the pool via the following factory me
 public List<Buffer> allocate(int num, VkCommandBufferLevel level) {
     // Init descriptor
     var info = new VkCommandBufferAllocateInfo();
-    info.level = notNull(level);
-    info.commandBufferCount = oneOrMore(num);
+    info.level = level;
+    info.commandBufferCount = num;
     info.commandPool = this.handle();
 
     // Allocate buffers

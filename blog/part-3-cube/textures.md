@@ -110,8 +110,7 @@ new Vertex(new Point(-0.5f, -0.5f, 0), Coordinate2D.TOP_LEFT)
 
 ### Component Layout
 
-As noted in the previous chapter the configuration of the vertex input pipeline stage is currently quite laborious and requires hard-coding the vertex attribute formats.
-However the necessary information is already implicit in the vertex components which just needs to be made explicit.
+As noted in the previous chapter the configuration of the vertex input pipeline stage is currently quite laborious and requires hard-coding the vertex attribute formats.  However the necessary information is already implicit in the vertex components and just needs some supporting functionality to extract the relevant information.
 
 A new type is introduced to represent the data layout of some arbitrary object:
 
@@ -402,7 +401,7 @@ private static class SwapChainImage implements Image {
 }
 ```
 
-A second implementation can now be created for general images:
+A second implementation can now be created for general images managed by the application:
 
 ```java
 class DefaultImage extends AbstractVulkanObject implements Image {
@@ -714,15 +713,6 @@ public enum AddressMode {
 
     private final VkSamplerAddressMode mode, mirrored;
 
-    private AddressMode(VkSamplerAddressMode mode, VkSamplerAddressMode mirrored) {
-        this.mode = notNull(mode);
-        this.mirrored = mirrored;
-    }
-
-    public VkSamplerAddressMode mode() {
-        return mode;
-    }
-
     public VkSamplerAddressMode mirror() {
         if(mirrored == null) throw new IllegalStateException();
         return mirrored;
@@ -758,12 +748,6 @@ A _pipeline barrier_ is a command used to synchronise access to images, buffers 
 public class Barrier implements Command {
     private final BitMask<VkPipelineStage> src, dest;
     private final VkImageMemoryBarrier[] images;
-
-    private Barrier(Set<VkPipelineStage> src, Set<VkPipelineStage> dest, VkImageMemoryBarrier[] images) {
-        this.src = new BitMask<>(src);
-        this.dest = new BitMask<>(dest);
-        this.images = notNull(images);
-    }
 
     @Override
     public void execute(VulkanLibrary lib, Buffer buffer) {
@@ -889,7 +873,7 @@ Note that a new instance is constructed on invocation since JNA structures are m
 
 We now have all the components required to load an image to the hardware and create the texture sampler.
 
-The texture is loaded by a new configuration class:
+First the texture is loaded by a new configuration class:
 
 ```java
 @Configuration

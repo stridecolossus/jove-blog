@@ -76,7 +76,7 @@ interface Region {
 
     /**
      * Un-maps this mapped region.
-     * @throws IllegalStateException if the mapping has also been released or the memory has been destroyed
+     * @throws IllegalStateException if the mapping has already been released or the memory has been destroyed
      */
     void unmap();
 }
@@ -119,7 +119,7 @@ public class DefaultDeviceMemory ... {
 }
 ```
 
-The `map` method creates a mapped region for the memory:
+A region of the memory can then be mapped:
 
 ```java
 public Region map(long offset, long size) {
@@ -138,7 +138,7 @@ public Region map(long offset, long size) {
 
 Note that only one mapped region is permitted for a given memory instance.
 
-An NIO buffer can then be retrieved from the mapped region to read or write the memory:
+An NIO buffer can be retrieved from a mapped region to read or write a portion of the memory:
 
 ```java
 public ByteBuffer buffer(long offset, long size) {
@@ -165,66 +165,60 @@ Each memory type is represented by a new domain class:
 
 ```java
 public record MemoryType(int index, Heap heap, Set<VkMemoryProperty> properties) {
+
     public record Heap(long size, Set<VkMemoryHeapFlag> flags) {
     }
 }
 ```
 
-The memory types and heaps are enumerated from the structure via the following factory method:
+The memory heaps are enumerated from the structure via the following factory method:
 
 ```java
 public static MemoryType[] enumerate(VkPhysicalDeviceMemoryProperties descriptor) {
-    class Helper {
-        ...
-    }
-    
-    Helper helper = new Helper();
-    return helper.types();
+    // Extract memory heaps
+    Heap[] heaps = new Heap[descriptor.memoryHeapCount];
+    Arrays.setAll(heaps, new HeapMapper());
+
+    // Extract memory types
+    MemoryType[] types = new MemoryType[descriptor.memoryTypeCount];
+    Arrays.setAll(types, new TypeMapper());
+
+    return types;
 }
 ```
 
-The local helper class wraps up the extraction process by first retrieving the array of memory heaps:
+Where `HeapMapper` is a method-local helper that extracts the relevant fields from the descriptor for each heap:
 
 ```java
-class Helper {
-    private final ReverseMapping<VkMemoryHeapFlag> mapper = IntEnum.reverse(VkMemoryHeapFlag.class);
-    private final List<Heap> heaps;
+class HeapMapper implements IntFunction<Heap> {
+    private final ReverseMapping<VkMemoryHeapFlag> mapper = new ReverseMapping<>(VkMemoryHeapFlag.class);
 
-    Helper() {
-        heaps = Arrays
-                .stream(descriptor.memoryHeaps)
-                .map(this::heap)
-                .toList();
-    }
-
-    private Heap heap(VkMemoryHeap heap) {
+    @Override
+    public Heap apply(int index) {
+        VkMemoryHeap heap = descriptor.memoryHeaps[index];
         Set<VkMemoryHeapFlag> flags = heap.flags.enumerate(mapper);
         return new Heap(heap.size, flags);
     }
 }
 ```
 
-Followed by the memory types:
+And similarly for each memory type:
 
 ```java
-private final ReverseMapping<VkMemoryProperty> properties = IntEnum.reverse(VkMemoryProperty.class);
+class TypeMapper implements IntFunction<MemoryType> {
+    private final ReverseMapping<VkMemoryProperty> properties = new ReverseMapping<>(VkMemoryProperty.class);
 
-MemoryType[] types() {
-    return IntStream
-            .range(0, descriptor.memoryTypeCount)
-            .mapToObj(this::type)
-            .toArray(MemoryType[]::new);
-}
-
-private MemoryType type(int index) {
-    VkMemoryType type = descriptor.memoryTypes[index];
-    Heap heap = heaps.get(type.heapIndex);
-    Set<VkMemoryProperty> props = type.propertyFlags.enumerate(properties);
-    return new MemoryType(index, heap, props);
+    @Override
+    public MemoryType apply(int index) {
+        VkMemoryType type = descriptor.memoryTypes[index];
+        Heap heap = heaps[type.heapIndex];
+        Set<VkMemoryProperty> props = type.propertyFlags.enumerate(properties);
+        return new MemoryType(index, heap, props);
+    }
 }
 ```
 
-Finally the following new type specifies the requirements of a memory request:
+Finally the following new type specifies the requirements of a given memory request:
 
 ```java
 public record MemoryProperties<T>(

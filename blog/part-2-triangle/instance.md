@@ -358,13 +358,10 @@ The _desktop_ service abstracts over the underlying GLFW implementation:
 ```java
 public class Desktop {
     public static Desktop create() {
+        ...
     }
 
     private final DesktopLibrary lib;
-
-    Desktop(DesktopLibrary lib) {
-        this.lib = lib;
-    }
 
     public boolean isVulkanSupported() {
         return lib.glfwVulkanSupported();
@@ -444,7 +441,7 @@ A convenience method is also added to the instance builder to add the array of e
 
 Vulkan implements the `STANDARD_VALIDATION` layer that provides an excellent error and diagnostics reporting mechanism, offering comprehensive logging as well as identifying common problems such as orphaned object handles, invalid parameters, performance warnings, etc.  This functionality is not mandatory but its safe to say it is _highly_ recommended during development, so we will address it now before we progress any further.
 
-However there is a complication: the reporting mechanism is not a core part of the API but is itself an extension.  The relevant function pointers must be looked up from the instance and the associated data structures can only determined from the Vulkan documentation.
+However there is a complication: the reporting mechanism is not a core part of the API but is itself an extension.  The relevant function pointers must be looked up from the instance and the associated structures must be derived from the Vulkan documentation.
 
 Registering a diagnostics handler consists of the following steps:
 

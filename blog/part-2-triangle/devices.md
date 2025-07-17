@@ -29,9 +29,7 @@ Creating the logical device consists of the following steps:
 
 4. Retrieve the required work queues.
 
-The process of displaying a rendered frame is known as _presentation_ and is implemented by Vulkan as a task on a presentation queue.  The demo requires a device that supports presentation so the _desktop_ library will be extended to create a window with a Vulkan rendering surface.
-
-Finally some framework enhancements are introduced to support common patterns that appeared during implementation.
+Additionally some framework enhancements are introduced in this chapter to support common patterns that appeared during design and development.
 
 ---
 
@@ -131,7 +129,7 @@ Another helper is implemented to create a queue family domain object:
 
 ```java
 private static Family family(int index, VkQueueFamilyProperties props) {
-    var mapping = IntEnum.reverse(VkQueueFlag.class);
+    var mapping = new ReverseMapping<>(VkQueueFlag.class);
     Set<VkQueueFlag> flags = props.queueFlags.enumerate(mapping);
     return new Family(index, props.queueCount, flags);
 }
@@ -302,7 +300,7 @@ Where:
 
 - The _priorities_ is a list of percentile values that specify the required number of queues in the family and their relative priorities.
 
-- A `Percentile` is a custom numeric type for a percentile represented as a `0..1` floating-point value.
+- A `Percentile` is a custom type for a `0..1` floating-point number.
 
 The `build` method populates the descriptor for the logical device:
 
@@ -677,12 +675,9 @@ public static <T, R extends Structure> Collector<T, ?, R[]> collector(Supplier<R
 
 In this chapter we:
 
-* Created a GLFW window and Vulkan surface
-
 * Enumerated the physical devices available on the local hardware and selected one appropriate for the demo application.
 
 * Created the logical device and work queues used in subsequent chapters
 
 * Added supporting functionality for _two stage invocation_ and population of structure arrays.
-
 

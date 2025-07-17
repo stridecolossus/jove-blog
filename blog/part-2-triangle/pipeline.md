@@ -144,7 +144,7 @@ Where `Rectangle` is a trivial record type:
 public record Rectangle(int x, int y, int width, int height)
 ```
 
-The following overloaded helper is added for the common case of a single viewport and scissor rectangle with the same dimensions:
+The following helper is added for the common case of a single viewport and scissor rectangle with the same dimensions:
 
 ```java
 public ViewportStage viewportAndScissor(Viewport viewport) {
@@ -157,8 +157,7 @@ public ViewportStage viewportAndScissor(Viewport viewport) {
 Each viewport generates a separate descriptor:
 
 ```java
-VkViewport populate() {
-    var viewport = new VkViewport();
+void populate(VkViewport viewport) {
     viewport.x = rectangle.x();
     viewport.y = rectangle.y();
     viewport.width = rectangle.width();
@@ -276,12 +275,10 @@ public static class Builder {
 The descriptor for a shader stage is populated as follows:
 
 ```java
-VkPipelineShaderStageCreateInfo descriptor() {
-    var info = new VkPipelineShaderStageCreateInfo();
+void populate(VkPipelineShaderStageCreateInfo info) {
     info.stage = stage;
     info.module = shader.handle();
     info.pName = name;
-    return info;
 }
 ```
 
@@ -298,7 +295,7 @@ public Builder shader(ProgrammableShaderStage shader) {
 
 ### Conclusion
 
-The parent builder can now be completed by first populating the descriptor for the pipeline itself:
+The parent builder can now be completed by first constructing the descriptor for the pipeline itself:
 
 ```java
 public Pipeline build(LogicalDevice dev) {

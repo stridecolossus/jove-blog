@@ -1,4 +1,4 @@
----
+with an ---
 title: Presentation
 ---
 
@@ -379,7 +379,7 @@ Which matches a queue family against the surface handle:
 
 ```java
 public boolean isPresentationSupported(Handle surface, Family family) {
-    var supported = new IntegerByReference();
+    var supported = new IntByReferenceIntByReferenceIntByReferenceIntByReference();
     vulkan.vkGetPhysicalDeviceSurfaceSupportKHR(this, family.index(), surface, supported);
     return supported.get() == 1;
 }
@@ -388,7 +388,7 @@ public boolean isPresentationSupported(Handle surface, Family family) {
 The new API method is added to the library for the physical device:
 
 ```java
-VkResult vkGetPhysicalDeviceSurfaceSupportKHR(PhysicalDevice device, int queueFamilyIndex, Handle surface, IntegerByReference supported);
+VkResult vkGetPhysicalDeviceSurfaceSupportKHR(PhysicalDevice device, int queueFamilyIndex, Handle surface, IntByReference supported);
 ```
 
 ### Rendering Surface
@@ -984,11 +984,11 @@ This type converter is registered with the JNA library solving the mapping probl
 
 ## Summary
 
-This chapter covered the implementation of various components to support presentation:
+This chapter implemented the following to support presentation:
 
 * The GLFW window.
 
-* The Vulkan rendering surface and device selection.
+* The Vulkan rendering surface.
 
 * Implementation of the swapchain and image/views.
 

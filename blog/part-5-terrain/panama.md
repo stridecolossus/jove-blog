@@ -227,7 +227,7 @@ From these requirements the following observations can be made concerning some o
 
 From the above the following framework components are identified:
 
-* A _native library builder_ responsible for constructing the FFM implementation of a native API expressed in domain terms.
+* A _native library factory_ responsible for constructing the FFM implementation of a native API expressed in domain terms.
 
 * A set of _transformers_ for the supported types responsible for off-heap memory allocation and marshalling to/from the equivalent FFM representation.
 
@@ -253,33 +253,7 @@ As already noted, Vulkan is very front-loaded with complexity, so framework supp
 
 ### Native Library
 
-The logical starting point is the factory class that builds a native library.
-
-This involves the following steps:
-
-1. Enumerate the native methods from the user defined API.
-
-2. Create and link an FFM method handle for each identified API method.
-
-3. Create a Java proxy that delegates API calls to the underlying FFM methods.
-
-This process is implemented as follows:
-
-```java
-public class NativeLibraryBuilder {
-    private final SymbolLookup lookup;
-
-    public <T> T build(Class<T> api) {
-        if(!api.isInterface()) throw new IllegalArgumentException(...);
-        Map<Method, NativeMethod> methods = methods(api);
-        return proxy(api, methods);
-    }
-}
-```
-
-Where _api_ is the user defined interface specifying the API to be implemented.
-
-The `NativeMethod` class is a wrapper for the resultant FFM handle:
+The logical starting point is the native method class which for the moment is simply a wrapper for the underlying FFM method:
 
 ```java
 public class NativeMethod {
@@ -291,18 +265,41 @@ public class NativeMethod {
 }
 ```
 
-The API methods are enumerated by reflecting the API and building a wrapper for each native method:
+Constructing the FFM implementation of a native API involves the following steps:
+
+1. Enumerate the native methods from the user defined API.
+
+2. Create and link an FFM method handle for each identified API method.
+
+3. Create a Java proxy that delegates API calls to the underlying FFM methods.
+
+This process is implemented by the second new component:
+
+```java
+public class NativeLibraryFactory {
+    private final SymbolLookup lookup;
+
+    public <T> T build(Class<T> api) {
+        if(!api.isInterface()) throw new IllegalArgumentException(...);
+        ...
+    }
+}
+```
+
+Where _api_ is the user defined interface specifying the API to be implemented.
+
+The API methods are enumerated by reflecting the API:
 
 ```java
 private Map<Method, NativeMethod> methods(Class<?> api) {
     return Arrays
         .stream(api.getMethods())
-        .filter(NativeLibraryBuilder::isNativeMethod)
+        .filter(NativeLibraryFactory::isNativeMethod)
         .collect(toMap(Function.identity(), this::build));
 }
 ```
 
-Where a native method is defined as a public, non-static method of the API:
+Where a native method is defined as a public, non-static member of the API:
 
 ```java
 private static boolean isNativeMethod(Method method) {
@@ -311,7 +308,7 @@ private static boolean isNativeMethod(Method method) {
 }
 ```
 
-The overloaded `build` method finds the symbol (i.e. the off-heap address) of the method by name and temporarily creates an empty wrapper:
+The `build` method finds the symbol (i.e. the off-heap address) of the method by name and creates a new instance of the wrapper:
 
 ```java
 public NativeMethod build(Method method) {
@@ -320,7 +317,7 @@ public NativeMethod build(Method method) {
 }
 ```
 
-Next an _invocation handler_ is created that delegates Java method calls to the underlying native method:
+Next an _invocation handler_ is created which delegates API calls to the relevant native method:
 
 ```java
 private <T> T proxy(Class<T> api, Map<Method, NativeMethod> methods) {
@@ -364,7 +361,7 @@ Construction of the native method handle requires the symbol and an FFM function
 public NativeMethod build() {
     MemoryLayout[] layouts = Arrays
         .stream(signature)
-        .map(NativeLibraryBuilder::layout)
+        .map(NativeLibraryFactory::layout)
         .toArray(MemoryLayout[]::new);
         
     ...
@@ -447,7 +444,7 @@ A proxy implementation is generated using the new factory:
 ```java
 try(Arena arena = Arena.ofConfined()) {
     var lookup = SymbolLookup.libraryLookup("glfw3", arena);
-    var factory = new NativeLibraryBuilder(lookup);
+    var factory = new NativeLibraryFactory(lookup);
     API api = factory.build(API.class);
     ...
 }
@@ -651,16 +648,29 @@ Where the `allocateFrom` helper allocates the off-heap memory for a given string
 
 #### Domain Types
 
-A JOVE `Handle` is reimplemented as an opaque, immutable wrapper for an FFM pointer:
+A JOVE `Handle` is reimplemented as an immutable wrapper for an FFM pointer:
 
 ```java
-public final class Handle {
-    private final MemorySegment address;
-
-    public Handle(MemorySegment address) {
-        this.address = address.asReadOnly();
+public record Handle(MemorySegment address) {
+    /**
+     * Constructor.
+     * @param address Memory address
+     */
+    public Handle {
+        address = address.asReadOnly();
     }
 
+    /**
+     * Constructor given a literal address.
+     * @param address Memory address
+     */
+    public Handle(long address) {
+        this(MemorySegment.ofAddress(address));
+    }
+
+    /**
+     * @return Copy of the underlying memory address
+     */
     public MemorySegment address() {
         return MemorySegment.ofAddress(address.address());
     }
@@ -684,17 +694,13 @@ public static class HandleTransformer implements Transformer<Handle> {
 And similarly for JOVE domain types:
 
 ```java
-public interface NativeObject {
-    Handle handle();
+public static class NativeObjectTransformer implements Transformer<NativeObject> {
+    public MemorySegment marshal(NativeObject arg, SegmentAllocator allocator) {
+        return arg.handle().address();
+    }
 
-    public static class NativeObjectTransformer implements Transformer<NativeObject> {
-        public MemorySegment marshal(NativeObject arg, SegmentAllocator allocator) {
-            return arg.handle().address();
-        }
-
-        public Function<? extends Object, NativeObject> unmarshal() {
-            throw new UnsupportedOperationException(...);
-        }
+    public Function<? extends Object, NativeObject> unmarshal() {
+        throw new UnsupportedOperationException(...);
     }
 }
 ```
@@ -880,7 +886,7 @@ Refactoring of the `Desktop` service resulted in the following:
 public static Desktop create() {
     // Build GLFW library
     var registry = DefaultRegistry.create();
-    var factory = new NativeLibraryBuilder("glfw3", registry);
+    var factory = new NativeLibraryFactory("glfw3", registry);
     DesktopLibrary lib = factory.build(DesktopLibrary.class);
 
     // Init GLFW
@@ -919,8 +925,8 @@ The prototype is similarly refactored and extended to the point where the applic
 ```java
 void main() throws Exception {
     var desktop = Desktop.create();
-    System.out.println(desktop.version());
-    System.out.println(desktop.isVulkanSupported());
+    println(desktop.version());
+    println(desktop.isVulkanSupported());
 
     Window window = new Window.Builder()
         .title("Prototype")
@@ -970,7 +976,7 @@ With a `create` method to instantiate the library:
 ```java
 public static Vulkan create() {
     var registry = DefaultRegistry.create();
-    var factory = new NativeLibraryBuilder("vulkan-1", registry);
+    var factory = new NativeLibraryFactory("vulkan-1", registry);
     var lib = factory.build(VulkanLibrary.class);
     return new Vulkan(lib, registry, new NativeReference.Factory());
 }
@@ -985,7 +991,7 @@ The approach of using a proxy enables the new framework to validate _all_ Vulkan
 First a handler for return values is added to the factory:
 
 ```java
-public class NativeLibraryBuilder {
+public class NativeLibraryFactory {
     private Consumer<Object> check = result -> {};
 }
 ```
@@ -1021,7 +1027,7 @@ Which is integrated into the Vulkan implementation accordingly:
 ```java
 public static Vulkan create() {
     ...
-    var factory = new NativeLibraryBuilder(registry);
+    var factory = new NativeLibraryFactory(registry);
     factory.setIntegerReturnHandler(Vulkan::check);
     ...
 }
@@ -1612,7 +1618,8 @@ Which is invoked with the relevant arguments to create the handler:
 ```java
 NativeReference<Handle> ref = instance.vulkan().factory().pointer();
 Object[] args = {instance, info, null, ref};
-Vulkan.check((int) create.invoke(args));
+VkResult result = (VkResult) create.invoke(args);
+if(result != VkResult.SUCCESS) throw new VulkanException(result);
 return ref.get();
 ```
 

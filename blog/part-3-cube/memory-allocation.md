@@ -171,7 +171,7 @@ public record MemoryType(int index, Heap heap, Set<VkMemoryProperty> properties)
 }
 ```
 
-The memory heaps are enumerated from the structure via the following factory method:
+The memory types are extracted from the structure via the following factory method:
 
 ```java
 public static MemoryType[] enumerate(VkPhysicalDeviceMemoryProperties descriptor) {

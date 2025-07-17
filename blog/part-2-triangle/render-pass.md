@@ -392,7 +392,7 @@ class DesktopConfiguration {
         return new Window.Builder()
             .title("TriangleDemo")
             .size(new Dimensions(1024, 768))
-            .property(Window.Hint.DISABLE_OPENGL)
+            .property(Window.Hint.CLIENT_API)
             .build(desktop);
     }
 
@@ -436,7 +436,7 @@ class VulkanConfiguration {
         // Create instance
         Instance instance = new Instance.Builder()
             .name(title)
-            .extension(VulkanLibrary.EXTENSION_DEBUG_UTILS)
+            .extension(DiagnosticHandler.EXTENSION)
             .extensions(desktop.extensions())
             .layer(ValidationLayer.STANDARD_VALIDATION)
             .build(lib);

@@ -6,148 +6,43 @@ title: Panama Integration
 
 # Contents
 
-- [Overview](#overview)
-- [Design](#design)
+- [Introduction](#introduction)
+- [Approach](#approach)
 - [Framework](#framework)
-- [Structures](#structures)
-- [Returned Parameters](#returned-parameters)
-- [Conclusion](#conclusion)
+- [Vulkan Instance](#vulkan-instance)
+- [Physical Device](#physical-device)
+- [Miscellaneous](#miscellaneous)
 - [Summary](#summary)
 
 ---
 
-# Overview
+# Introduction
 
-It has always been the intention at some point to re-implement the Vulkan native layer using the FFM (Foreign Function and Memory) library developed as part of project [Panama](https://openjdk.java.net/projects/panama/).  The reasons for delaying this rework are discussed in [code generation](/jove-blog/blog/part-1-intro/code-generation#alternatives) at the very beginning of the blog.
+It had always been the intention at some point to re-implement the Vulkan native layer using the FFM (Foreign Function and Memory) library developed as part of project [Panama](https://openjdk.java.net/projects/panama/).  The reasons for delaying this rework are discussed in [code generation](/jove-blog/blog/part-1-intro/code-generation#alternatives) at the very beginning of the blog.
 
-With the LTS release of JDK 21 the FFM library was elevated to a preview feature (rather than requiring an incubator build) and much more information and tutorials started to appear online, so it is high time to replace JNA with the more future proofed (and safer) FFM solution.
+With the LTS release of JDK 21 the FFM library was elevated to a preview feature (rather than requiring an incubator build) and much more information and tutorials started to appear online, so it was high time to replace JNA with the more future proofed (and safer) FFM solution.
 
-A fundamental technical decision that must be addressed immediately is whether to use the `jextract` tool to generate the _bindings_ to the native libraries or to implement a bespoke solution.  To resolve this question the tool is used to generate the Vulkan API and the results are compared and contrasted with a throwaway, hard-crafted application built using FFM from first principles.
+The following section analyses the requirements for the refactoring work.  The remaining sections iteratively integrate the FFM solution into the existing code base.
 
 ---
 
-# Design
+# Approach
 
-## Exploring Panama
+## Analysis
 
-The GLFW library is again used as the guinea-pig since this API is relatively simple in comparison to Vulkan, which is front-loaded with complexities such as marshalling of structures, by-reference types, callbacks for diagnostic handlers, etc.
+A fundamental technical decision that must be addressed immediately is whether to use the `jextract` tool to generate the _bindings_ to the native libraries or to implement a bespoke solution.
 
-First the native library is loaded using the `SymbolLookup` service:
-
-```java
-public class DesktopForeignDemo {
-    void main() {
-        try(Arena arena = Arena.ofConfined()) {
-            Linker linker = Linker.nativeLinker();
-            SymbolLookup lookup = SymbolLookup.libraryLookup("glfw3", arena);
-            var demo = new DesktopForeignDemo(lookup);
-            ...
-        }
-    }
-}
-```
-
-The process of invoking a native method using FFM is:
-
-1. Find the off-heap address of the the method via the lookup service.
-
-2. Build a `FunctionDescriptor` specifying the signature of the method.
-
-3. Combine both of these to link a `MethodHandle` to the native method.
-
-4. Invoke the handle with an array of the appropriate arguments.
-
-This process is illustrated in the following code which initialises GLFW and returns a success code:
-
-```java
-private void init() {
-    MemorySegment symbol = lookup.find("glfwInit").orElseThrow();
-    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.of(ValueLayout.JAVA_INT));
-    println("init=" + handle.invoke());
-}
-```
-
-The GLFW version can be queried:
-
-```java
-private void version() {
-    MemorySegment symbol = lookup.find("glfwGetVersionString").orElseThrow(),
-    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.of(ValueLayout.ADDRESS));
-    MemorySegment address = (MemorySegment) handle.invoke();
-    String version = versionAddress.reinterpret(Integer.MAX_VALUE).getString(0L);
-    println("version=" + version);
-}
-```
-
-Note that off-heap address has to be _reinterpreted_ to expand the bounds of the off-heap memory, in this case an undefined length for a pointer to a null-terminated character array.  The `0L` argument in the `getString` helper is an offset into the off-heap memory.
-
-Support for Vulkan can also be tested:
-
-```java
-private void supported() {
-    MemorySegment symbol = lookup.find("glfwVulkanSupported").orElseThrow(),
-    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN));
-    println("supported=" + handle.invoke());
-}
-```
-
-Retrieving the supporting Vulkan extensions for the platform is slightly complex since the API returns a pointer to a string-array and uses a _by reference_ integer to return the size of the array as a side-effect:
-
-```java
-private void extensions() {
-    MemorySegment symbol = lookup.find("glfwGetRequiredInstanceExtensions").orElseThrow(),
-    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-    MemorySegment count = arena.allocate(ValueLayout.ADDRESS);
-    MemorySegment extensions = (MemorySegment) handle.invoke(count);
-    ...
-}
-```
-
-The length of the array is extracted from the by-reference `count` to resize the off-heap memory:
-
-```java
-int length = count.get(ValueLayout.JAVA_INT, 0L);
-MemorySegment array = extensions.reinterpret(length * ValueLayout.ADDRESS.byteSize());
-```
-
-And each element is then extracted and transformed to a Java string:
-
-```java
-for(int n = 0; n < length; ++n) {
-    MemorySegment e = array.getAtIndex(ADDRESS, n);
-    println("extension=" + e.reinterpret(Integer.MAX_VALUE).getString(0L));
-}
-```
-
-Finally GLFW is closed:
-
-```java
-private void terminate() {
-    MemorySegment symbol = lookup.find("glfwTerminate").orElseThrow(),
-    MethodHandle handle = linker.downcallHandle(symbol, FunctionDescriptor.ofVoid());
-    glfwTerminate.invoke();
-}
-```
-
-Note that `reinterpret` is an _unsafe_ operation that can result in a JVM crash for an out-of-bounds memory access, since the actual memory size cannot be guaranteed by the JVM.  Additionally this method is _restricted_ and generates a runtime warning, which can be suppressed by the following VM argument:
-
-```
---enable-native-access=ALL-UNNAMED
-```
-
-### Analysis
+We use the tool to generate the _bindings_ to the Vulkan API and then compare and contrast with a theoretical custom implementation built using FFM from first principles.
 
 Generating the FFM bindings using `jextract` is relatively trivial and takes a couple of seconds:
 
 `jextract --source \VulkanSDK\1.2.154.1\Include\vulkan\vulkan.h`
 
-With some experience of the FFM library and the generated Vulkan bindings, we can attempt to extrapolate how JOVE could be refactored and make some observations.
-
-The advantages of `jextract` are obvious:
+The advantages of using the tool are obvious:
 
 * Proven and standard JVM technology.
 
-* Automated (in particular the FFM memory layouts for native structures).
+* Automated, in particular the FFM memory layouts for native structures.
 
 However there are disadvantages:
 
@@ -159,7 +54,7 @@ However there are disadvantages:
 
 * Implies throwing away the existing code generated enumerations and structures.
 
-Alternatively an abstraction layer based on the existing hand-crafted API and code-generated classes would have the following advantages:
+Alternatively a bespoke solution based on the existing hand-crafted API and code-generated classes would have the following advantages:
 
 * The native API and structures are expressed in domain terms.
 
@@ -175,15 +70,17 @@ On the other hand:
 
 * Memory layouts needs to be generated for _all_ structures.
 
-Despite the advantages of `jextract` the hybrid solution is clearly preferable - the ugly bindings, lack of type safety, etc. were the very concerns that led us to abandon LWJGL in the first place.
+Despite the advantages of `jextract` the hybrid solution is clearly preferable: the ugly bindings, lack of type safety, etc. were the very concerns that led us to abandon LWJGL in the first place.
 
 > In any case the application and/or JOVE would _still_ need to transform domain types to/from the FFM equivalents even if `jextract` was used to generate the underlying bindings.
 
 The source code generated by `jextract` will be retained as it will be a useful resource during development, particularly for the memory layout of structures.
 
-### Requirements
+## Requirements
 
-With this decision made (for better or worse) the requirements are determined as the following:
+With this decision made (for better or worse) the custom framework and refactoring will require the following:
+
+* A one-off task to remove all JNA dependencies from the code base.
 
 * A mechanism that generates an FFM-based implementation of the existing GLFW and Vulkan API definitions.
 
@@ -197,53 +94,23 @@ With this decision made (for better or worse) the requirements are determined as
 
 The marshalling framework will need to support the following types:
 
-* primitives
+* Primitives
 
-* strings
+* Strings
 
-* structures
+* Structures
 
-* domain types, i.e. reference types such as `Handle` or subclasses of `NativeObject`
+* Domain types, i.e. reference types such as `Handle` or subclasses of `NativeObject`
 
-* integer enumerations and bitfields
+* Integer enumerations and bitfields
 
-* arrays of these supported types.
+* Arrays of these supported types.
 
-From these requirements the following observations can be made concerning some of the trickier aspects:
+There are also a couple of edge cases that are immediately apparent:
 
-1. For the moment at least it seems logical to continue to treat by-reference integers and pointers as special cases.  They are already integral to JOVE (based on the existing JNA equivalents) and in particular there is no Java analog for a by-reference integer.
+1. It seems logical to continue to treat by-reference integers and pointers as special cases.  They are already integral to JOVE (based on the existing JNA equivalents) and in particular there is no Java analog for a by-reference integer.
 
-2. The other by-reference use-cases imply some form of post-processing to 'copy' the off-heap memory back to the argument(s).
-
-3. GLFW makes heavy use of callbacks for device polling which will require substantial factoring to use FFM upcall stubs.
-
-4. The `glfwGetRequiredInstanceExtensions` method returns an array of strings, however the length of the array is specified as a by-reference integer parameter populated as a side-effect.  Therefore the returned extensions _cannot_ be modelled as a Java array (probably implying some sort of intermediate wrapper).  This is the only method in either library that returns an array, therefore this requirement is treated as an edge-case and deferred for the moment, and the Vulkan extensions are temporarily hard-coded
-
-### Design
-
-From the above the following framework components are identified:
-
-* A _native library factory_ responsible for constructing the FFM implementation of a native API expressed in domain terms.
-
-* A set of _transformers_ for the supported types responsible for off-heap memory allocation and marshalling to/from the equivalent FFM representation.
-
-* A _native method_ class that composes an FFM method handle and the transformers for its parameters and optional return type.
-
-* A mechanism to identify by-reference parameters and logic to unmarshal these parameters _after_ method invocation.
-
-Additionally there are some offline tasks to be completed:
-
-* Removal of the JNA library.
-
-* A global find-and-replace to refactor the GLFW and Vulkan APIs in terms of the new framework.
-
-* Automated generation of the FFM memory layouts for the Vulkan structures.
-
-A 'big bang' approach always feels inherently risky simply due to the shear scale of the changes to be made.  Therefore the plan is to create a throwaway prototype targeted at a cut-down API (again using GLFW to begin with) such that we can focus on the development of the new framework without getting bogged down in compilation issues.  Once this is up and running _then_ we will integrate the code into JOVE and iteratively reintroduce each component and refactor accordingly.
-
-As already noted, Vulkan is very front-loaded with complexity, so framework support will be implemented as we progress.  Once we are confident that the bulk of the challenges facing the new framework have been addressed, the prototype will be discarded and refactoring can continue with the existing suite of demo applications.
-
-///////////////////
+2. The `glfwGetRequiredInstanceExtensions` method cannot simply be mapped to a string array and is therefore hard-coded for the moment, see [Returned Arrays](#returned-arrays) below.
 
 ---
 
@@ -278,7 +145,7 @@ Map<Method, NativeMethod> methods = api
     .stream()
     .map(Class::getMethods)
     .flatMap(Arrays::stream)
-    .filter(Builder::isNativeMethod)
+    .filter(NativeLibraryFactory::isNativeMethod)
     .collect(toMap(Function.identity(), NativeMethod::new));
 ```
 
@@ -322,7 +189,9 @@ var interfaces = api.toArray(Class<?>[]::new);
 return Proxy.newProxyInstance(loader, interfaces, handler);
 ```
 
-To exercise the new framework a prototype is created using the following (very) cut-down GLFW library, dependant only on integer primitives for the moment:
+To exercise the new framework a throwaway prototype is created using GLFW as the guinea-pig.  This API is considerably simpler than Vulkan, which is front-loaded with complexities such as marshalling of structures, by-reference parameters, arrays, etc.
+
+First the following (very) cut-down GLFW library is defined, dependant only on integer primitives for the moment:
 
 ```java
 interface Prototype {
@@ -395,7 +264,7 @@ MemoryLayout[] layouts = Arrays
 Where `layout` is a temporary, quick-and-dirty mapper that just supports the integer primitives used in the prototype:
 
 ```java
-private static MemoryLayout layout(Class<?> type) {
+private MemoryLayout layout(Class<?> type) {
     if(type == int.class) {
         return ValueLayout.JAVA_INT;
     }
@@ -435,7 +304,7 @@ In the prototype the FFM `SymbolLookup` first loads the native library:
 
 ```java
 SymbolLookup lookup = SymbolLookup.libraryLookup("glfw3", Arena.ofAuto());
-var builder = new NativeLibraryFactory(lookup);
+var factory = new NativeLibraryFactory(lookup);
 API api = ...
 ```
 
@@ -624,6 +493,12 @@ public class StringTransformer implements Transformer<String, MemorySegment> {
 }
 ```
 
+Note that `reinterpret` is an _unsafe_ operation that can result in a JVM crash for an out-of-bounds memory access, since the actual memory size cannot be guaranteed by the JVM.  Additionally this method is _restricted_ and generates a runtime warning suppressed by the following VM argument:
+
+```
+--enable-native-access=ALL-UNNAMED
+```
+
 A JOVE `Handle` is reimplemented as an immutable wrapper for an FFM address:
 
 ```java
@@ -773,7 +648,7 @@ Notes:
 
 * The Java primitive type is derived from the FFM layout via the `carrier` method.
 
-* The `JAVA_BOOLEAN` layout is not included since `boolean` primitives turn out to be a bit of a special case (covered later in this chapter).
+* The `JAVA_BOOLEAN` layout is not included since `boolean` primitives turn out to be a bit of a special case, see [Native Boolean]()
 
 Finally the factory is refactored to lookup transformers from the registry and the temporary code can be removed:
 
@@ -789,7 +664,7 @@ private Transformer transformer(Method method, Class<?> type) {
 
 The GLFW library is now fully supported by the new framework, other than the following which are deferred until later:
 
-* Callback support for GLFW devices (temporarily hacked out).
+* Callback support for GLFW devices is temporarily hacked out.
 
 * The `glfwGetRequiredInstanceExtensions` edge case is hard-coded for the moment.
 
@@ -866,7 +741,7 @@ The first step instantiates the Vulkan instance using the following native API m
 VkResult vkCreateInstance(VkInstanceCreateInfo* pCreateInfo, VkAllocationCallbacks* pAllocator, VkInstance* pInstance);
 ```
 
-Implementing just this very first API call implies marshalling support for the following:
+Implementing just this first API call implies marshalling support for the following:
 
 * structures - namely `VkInstanceCreateInfo` and `VkApplicationInfo`.
 
@@ -884,7 +759,7 @@ The simpler dependencies will be dealt with first along with a few framework enh
 
 ### Enumerations
 
-Marhalling an integer enumeration is implemented as another companion transformer:
+Marshalling an integer enumeration is implemented as another companion transformer:
 
 ```java
 class IntEnumTransformer implements Transformer<IntEnum, Integer> {
@@ -987,7 +862,7 @@ Empty values are now handled in one location in the marshalling logic of the nat
 private Object[] marshal(Object[] args) {
     ...
     for(int n = 0; n < args.length; ++n) {
-        foreign[n] = marshal(args[n], parameters[n], allocator);
+        foreign[n] = Transformer.marshal(args[n], parameters[n], allocator);
     }
     return foreign;
 }
@@ -996,12 +871,14 @@ private Object[] marshal(Object[] args) {
 Delegating to the following helper:
 
 ```java    
-private static Object marshal(Object value, Transformer transformer, SegmentAllocator allocator) {
-    if(arg == null) {
-        return transformer.empty();
-    }
-    else {
-        return transformer.marshal(value, allocator);
+public Transformer {
+    static Object marshal(Object value, Transformer transformer, SegmentAllocator allocator) {
+        if(arg == null) {
+            return transformer.empty();
+        }
+        else {
+            return transformer.marshal(value, allocator);
+        }
     }
 }
 ```
@@ -1297,7 +1174,7 @@ Where `DefaultRegistry` is a helper that registers the various transformers requ
 
 ### Return Codes
 
-The approach of using a proxy means there is a central location where _all_ Vulkan return codes can be validated, whereas previously _every_ native call had to be wrapped with the `check` helper which was ugly and slightly tedious.
+The approach of using a proxy means there is a convenient, central location where _all_ Vulkan return codes can be validated, whereas previously _every_ native call had to be wrapped with the `check` helper which was ugly and slightly tedious.
 
 First a handler for return values is added to the factory:
 
@@ -1336,6 +1213,8 @@ Nice.
 ## Structures
 
 ### Structure Layout
+
+With all the above framework changes in place, we can now finally address marshalling of structures to implement creation of the Vulkan instance.
 
 The following interface is introduced as the supertype of all JOVE structures:
 
@@ -1553,7 +1432,7 @@ private List<FieldMapping> build() {
 }
 ```
 
-The field name is specified in the member layout:
+The `mapping` method builds each field mapping, first the field name is extracted from the layout:
 
 ```java
 String name = member.name().orElseThrow(...);
@@ -1629,7 +1508,7 @@ private interface HandlerLibrary {
 }
 ```
 
-Next the `function` method of the `Instance` is reintroduced, which turns out to be trivial:
+First the `function` method of the `Instance` is reintroduced, which turns out to be trivial:
 
 ```java
 public Optional<Handle> function(String name) {
@@ -1770,7 +1649,7 @@ In this case the off-heap memory needs to be explicitly resized to match the exp
 Unmarshalling a structure field is essentially the inverse of the `marshal` method:
 
 ```java
-record FieldMapping(...) {
+class FieldMapping {
     public void unmarshal(MemorySegment address, NativeStructure structure) {
         Object arg = foreign.get(address);
         Object value = transformer.unmarshal().apply(arg);
@@ -1803,231 +1682,302 @@ A good test of the refactor is to temporarily remove the code that releases atta
 
 # Physical Device
 
+## Overview
 
+The next Vulkan component to refactor is the physical device which uses native methods that are highly dependant on by-reference parameters:
 
+1. Enumerating the available physical devices via the `vkEnumeratePhysicalDevices` API method returns a by-reference _array_ of device handles.
 
+2. The queue families for each device are retrieved using `vkGetPhysicalDeviceQueueFamilyProperties` which returns a by-reference _structure array_ of the `VkQueueFamilyProperties` structure.
 
+3. Querying device properties generally returns a _structure_ by-reference, for example `vkGetPhysicalDeviceFeatures`.
 
+All three cases require marshalling logic to _update_ the method arguments _after_ invocation, essentially overwriting the structure fields or array elements provided by the caller.
 
----
+## Framework
 
-//////////////////////
+This introduces an ambiguity since by-reference and 'normal' parameters cannot be distinguished solely from the method signature.  JNA used the rather cumbersome `ByReference` interface which generally required _every_ structure to have _two_ implementations.  Additionally JNA essentially considered _every_ array as a by-reference parameter, where we instead prefer to make the intent explicit.
 
-## Returned Parameters
-
-### Returned Annotation
-
-The next Vulkan component after the instance is the physical device which uses native methods that are highly dependant on by-reference parameters.  These pose a problem because by-reference and 'normal' parameters cannot be distinguished solely from the method signature.
-
-JNA used the rather cumbersome `ByReference` interface which generally required _every_ structure to have _two_ implementations.  Additionally _every_ array is essentially a by-reference parameter as far as JNA is concerned, whereas we would prefer to separate the normal and by-reference cases.
-
-The most obvious solution is to use a custom annotation to explicitly declare by-reference parameters, the annotation is a simple _marker_ with no declared functionality:
+The most obvious solution is to use a custom annotation to explicitly declare by-reference parameters:
 
 ```java
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.PARAMETER)
-public @interface Returned {
+public @interface Updated {
 }
 ```
 
-Parameters returned by-reference are detected in the library builder when a native method is constructed:
+Notes:
 
-```java
-public NativeMethod build(Method method) {
-    ...
-    for(Parameter p : method.getParameters()) {
-        boolean returned = Objects.nonNull(p.getAnnotation(Returned.class));
-        builder.parameter(p.getType(), returned);
-    }
-    ...
-}
-```
+* This is a simple _marker_ interface with no declared functionality.
 
-The `parameter` method is overloaded to accept a flag indicating whether a parameter is returned by-reference:
+* This is probably a poor name, however by-reference is ugly in camel-case and would probably overlap with the JNA equivalent.
 
-```java
-public Builder parameter(Class<?> type, boolean returned) {
-    Transformer transformer = registry.get(type);
-    signature.add(new NativeParameter(transformer, returned));
-    return this;
-}
-```
+* The Vulkan API is manually refactored to declare by-reference parameters using the new annotation.
 
-```java
-record NativeParameter(Transformer<?> transformer, boolean returned) {
-    private MemoryLayout layout() {
-        if(returned) {
-            return AddressLayout.ADDRESS;
-        }
-        else {
-            return transformer.layout();
-        }
-    }
-}
-```
-
-```java
-public Object invoke(Object[] args) {
-    if(args == null) {
-        return null;
-    }
-
-    Object[] foreign = marshal(args, Arena.ofAuto());
-    Object result = handle.invokeWithArguments(foreign);
-    update(foreign, args);
-    return unmarshal(result);
-}
-```
-
-```java
-private void update(Object[] args, Object[] foreign) {
-    for(int n = 0; n < args.length; ++n) {
-        // Skip normal parameters
-        NativeParameter p = signature[n];
-        if(!p.returned) {
-            continue;
-        }
-
-        // Skip empty elements
-        if(Objects.isNull(args[n]) || MemorySegment.NULL.equals(foreign[n])) {
-            continue;
-        }
-
-        // Overwrite by-reference argument
-        ...
-    }
-}
-```
-
-Note that the framework assumes that the argument or array has already been instantiated prior to the method call, i.e. `null` parameters or array elements are ignored.
-
-/////////////////////
-
-
-
-### Integration
-
-Using the new annotation the refactored library for the physical device is as follows:
+The refactored library for the physical device is now as follows:
 
 ```java
 interface Library {
-    int  vkEnumeratePhysicalDevices(Instance instance, NativeReference<Integer> pPhysicalDeviceCount, @Returned Handle[] devices);
-    void vkGetPhysicalDeviceProperties(PhysicalDevice device, @Returned VkPhysicalDeviceProperties props);
-    void vkGetPhysicalDeviceFeatures(Handle device, @Returned VkPhysicalDeviceFeatures features);
-    void vkGetPhysicalDeviceQueueFamilyProperties(Handle device, NativeReference<Integer> pQueueFamilyPropertyCount, @Returned VkQueueFamilyProperties[] props);
-    void vkGetPhysicalDeviceFormatProperties(PhysicalDevice device, VkFormat format, @Returned VkFormatProperties props);
-    int  vkGetPhysicalDeviceSurfaceSupportKHR(PhysicalDevice device, int queueFamilyIndex, Handle surface, NativeReference<Integer> supported);
+    VkResult    vkEnumeratePhysicalDevices(Instance instance, IntegerReference pPhysicalDeviceCount, @Updated Handle[] devices);
+    void        vkGetPhysicalDeviceQueueFamilyProperties(Handle device, IntegerReference pQueueFamilyPropertyCount, @Updated VkQueueFamilyProperties[] pQueueFamilyProperties);
+    void        vkGetPhysicalDeviceProperties(PhysicalDevice device, @Updated VkPhysicalDeviceProperties props);
+    void        vkGetPhysicalDeviceMemoryProperties(PhysicalDevice device, @Updated VkPhysicalDeviceMemoryProperties pMemoryProperties);
+    void        vkGetPhysicalDeviceFeatures(Handle device, @Updated VkPhysicalDeviceFeatures features);
+    VkResult    vkEnumerateDeviceExtensionProperties(PhysicalDevice device, String layer, IntegerReference count, @Updated VkExtensionProperties[] extensions);
+    VkResult    vkEnumerateDeviceLayerProperties(PhysicalDevice device, IntegerReference count, @Updated VkLayerProperties[] layers);
+    void        vkGetPhysicalDeviceFormatProperties(PhysicalDevice device, VkFormat format, @Updated VkFormatProperties props);
 }
 ```
 
 Other than refactoring the library the remainder of the `PhysicalDevice` class remains as-is.
 
-/////////////////////
-
-There are three by-reference use-cases to be addressed:
-
-#### Structure
-
-The `vkGetPhysicalDeviceFeatures` method accepts a `VkPhysicalDeviceProperties` structure which is _populated_ by the native layer.
-
-A new method is added to the structure transformer to copy the off-heap data back to the structure:
+A by-reference parameter is unmarshalled via a new operation on the transformer interface:
 
 ```java
-public void unmarshal(MemorySegment address, Object structure) {
-    for(FieldMapping field : mappings) {
-        field.unmarshal(address, structure);
+public interface Transformer<T, N> {
+    default BiConsumer<N, T> update() {
+        throw new UnsupportedOperationException();
     }
 }
 ```
 
-Structures are the only type that can be returned in this manner, validation (not shown) applies this restriction in the `parameter` method above.
-
-#### Handle Array
-
-The `vkEnumeratePhysicalDevices` method enumerates the hardware devices by populating an array of handles.
-
-The native method eventually delegates to the following code to populate the array:
+The annotation is tested in the native library factory:
 
 ```java
-class ArrayTransformer {
-    public void update(MemorySegment address, Object[] array) {
-        for(int n = 0; n < array.length; ++n) {
-            MemorySegment element = address.getAtIndex(ValueLayout.ADDRESS, n);
-            array[n] = transformer.unmarshal(element);
-        }
+private static boolean isUpdatedParameter(Parameter parameter) {
+    return NativeReference.class.isAssignableFrom(parameter.getType()) || parameter.isAnnotationPresent(Updated.class);
+}
+```
+
+Note that a `NativeReference` is also implicitly treated as a by-reference type by this test.  The class is slightly refactored and the companion transformer now implements the new `update` operation:
+
+```java
+public static class NativeReferenceTransformer implements Transformer<NativeReference<?>, MemorySegment> {
+    public BiConsumer<MemorySegment, NativeReference<?>> update() {
+        return (address, reference) -> reference.update(address);
     }
 }
 ```
 
-As a quick reminder: Vulkan employs the [two stage invocation](/jove-blog/blog/part-2-triangle/devices#improvements) pattern when returning by-reference arrays:
+A _native parameter_ now composes the transformer and an additional flag indicating whether it is being accessed by-reference:
 
 ```java
-public static Stream<PhysicalDevice> devices(Instance instance) {
-    Vulkan vulkan = instance.vulkan();
-    VulkanLibrary lib = vulkan.library();
-    VulkanFunction<Handle[]> enumerate = (count, devices) -> lib.vkEnumeratePhysicalDevices(instance, count, devices);
-    Handle[] handles = vulkan.invoke(enumerate, Handle[]::new);
-    ...
+private NativeParameter parameter(Parameter parameter) {
+    Transformer transformer = registry.transformer(parameter.getType()).orElseThrow(...);
+    return new NativeParameter(transformer, isUpdatedParameter(parameter));
 }
 ```
 
-The slightly improved `invoke` helper (moved to the new `Vulkan` class) implements this pattern:
+The `update` function is extracted from the transformer as specified by the flag, both caching the function and throwing an exception if the type cannot be used by-reference:
 
 ```java
-public <T> T invoke(VulkanFunction<T> function, IntFunction<T> supplier) {
-    // Determine the result size
-    NativeReference<Integer> count = factory.integer();
-    function.get(count, null);
+public static class NativeParameter {
+    private final Transformer transformer;
+    private final BiConsumer update;
 
-    // Instantiate the container
-    int size = count.value();
-    T data = supplier.apply(size);
-
-    // Invoke again to populate the container
-    if(size > 0) {
-        function.get(count, data);
-    }
-
-    return data;
-}
-```
-
-#### Structure Array
-
-Finally `vkGetPhysicalDeviceQueueFamilyProperties` returns a by-reference array of structures.
-
-There is a subtle difference between a 'normal' structure array and one being returned by-reference.  Both cases require the off-heap array to be allocated as a contiguous memory block, however the memory layout of a by-reference parameter __must__ be a pointer (i.e. has an `ADDRESS` layout).
-
-Therefore the following helper determines the actual parameter layout depending on usage:
-
-```java
-record Parameter(Transformer transformer, boolean returned) {
-    private MemoryLayout layout() {
-        if(returned) {
-            return ValueLayout.ADDRESS;
+    public NativeParameter(Transformer transformer, boolean updated) {
+        if(updated) {
+            this.update = transformer.update();
         }
         else {
-            return transformer.layout();
+            this.update = null;
         }
     }
 }
 ```
 
-In either case the structure array is populated by slicing the off-heap memory and unmarshalling each element:
+A new stage is added in the native method to perform an update after invocation:
 
 ```java
-public void update(MemorySegment address, Object[] array) {
-    long size = transformer.layout().byteSize();
-    for(int n = 0; n < array.length; ++n) {
-        MemorySegment element = address.asSlice(n * size, size);
-        array[n] = transformer.unmarshal(element);
+public Object invoke(Object[] args) {
+    ...
+    Object result = invoke(foreign);
+    update(args, foreign);
+    return result;
+}
+```
+
+Where the new `update` method delegates to the transformer to overwrite each by-reference parameter as required:
+
+```java
+private void update(Object[] args, Object[] foreign) {
+    for(int n = 0; n < parameters.length; ++n) {
+        // Skip empty arguments
+        if(args[n] == null) {
+            continue;
+        }
+
+        // Skip empty arguments
+        if(MemorySegment.NULL.equals(foreign[n])) {
+            continue;
+        }
+
+        // Skip empty arguments
+        if(!parameters[n].isUpdated()) {
+            continue;
+        }
+
+        // Overwrite by-reference arguments
+        parameters[n].update.accept(foreign[n], args[n]);
     }
 }
 ```
 
-### Nested Structures
+The framework now supports the general notion of by-reference parameters and the individual use-cases identified above can now be addressed.
 
-There is another 'hidden' use-case that only became apparent during refactoring of the physical device.  Each device supports a number of queue families which are retrieved during enumeration, described by the following structure:
+## Reference Arrays
+
+The `vkEnumeratePhysicalDevices` method returns a by-reference array of device handles marshalled by the array transformer:
+
+```java
+public class ArrayTransformer implements Transformer<Object, MemorySegment> {
+    private final Transformer component;
+    private final VarHandle handle;
+
+    public BiConsumer<MemorySegment, Object> update() {
+        return (address, array) -> {
+            int length = Array.getLength(array);
+            update(address, array, length);
+        };
+    }
+}
+```
+
+Which unmarshals and overwrites each element of the array:
+
+```java
+protected void update(MemorySegment address, Object array, int length) {
+    for(int n = 0; n < length; ++n) {
+        // Retrieve off-heap element
+        Object foreign = handle.get(address, (long) n);
+    
+        // Skip empty elements
+        if(MemorySegment.NULL.equals(foreign)) {
+            continue;
+        }
+    
+        // Unmarshal element
+        Object element = component.unmarshal().apply(foreign);
+    
+        // Write to array
+        Array.set(array, n, element);
+    }
+}
+```
+
+Notes:
+
+* The array itself is assumed to have already been instantiated by the caller prior to invocation.  In this case the array is allocated by the `VulkanFunction` since this API method employs the _two stage invocation_ approach.
+
+* The `unmarshal` operation of the component transformer is reused to unmarshal each element from the off-heap memory.
+
+## Structure Arrays
+
+An API method that returns a by-reference array of structures such as `vkGetPhysicalDeviceQueueFamilyProperties` requires the array to be treated as a _compound_ type:
+
+1. The off-heap array is a contiguous block of memory.
+
+2. Each element of the off-heap array is itself a compound block of memory.
+
+The elements of an array with a reference component type (such as strings) can be accessed using a `VarHandle`.  Unfortunately FFM does not seem to provide an equivalent mechanism to access structure elements.  Array handles _can_ be retrieved for the individual __fields__ of a structure array but not for the elements themselves.  It is worth noting that the `jextract` equivalent generally abandons handles and accesses the off-heap memory directly, often using nasty hard-coded byte offsets.
+
+Therefore the following abstraction is introduced to the array transformer to retrieve and modify the off-heap array elements for the different cases:
+
+```java
+protected interface ElementAccessor {
+    Object get(MemorySegment address, int index);
+    void set(MemorySegment address, int index, Object element);
+}
+```
+
+The existing handle-based code is factored out for arrays with a component type that is __not__ a structure (usually handles or strings):
+
+```java
+class DefaultElementAccessor implements ElementAccessor {
+    private final VarHandle handle;
+
+    public DefaultElementAccessor(MemoryLayout layout) {
+        this.handle = Transformer.removeOffset(layout.arrayElementVarHandle());
+    }
+
+    public void set(MemorySegment address, int index, Object element) {
+        handle.set(address, (long) index, element);
+    }
+
+    public Object get(MemorySegment address, int index) {
+        return handle.get(address, (long) index);
+    }
+}
+```
+
+A specialised implementation can now be added for structures using _slices_ of the off-heap memory directly rather than a handle:
+
+```java
+private class StructureElementAccessor implements ElementAccessor {
+    private final long size = layout.byteSize();
+
+    public void set(MemorySegment address, int index, Object element) {
+        MemorySegment slice = get(address, index);
+        slice.copyFrom(element);
+    }
+
+    public MemorySegment get(MemorySegment address, int index) {
+        return address.asSlice(index * size, size);
+    }
+}
+```
+
+Which is used when creating an array transformer for a structure:
+
+```java
+public Transformer<?, ?> array() {
+    return new ArrayTransformer(this, new StructureElementAccessor());
+}
+```
+
+Other than the new element accessor and some slight refactoring to the array transformer class the above plugs into the existing framework to deliver by-reference structure arrays.
+This also provides the basis for further specialised implementations for primitive arrays later.
+
+## Structures
+
+The final use case handles a by-reference parameter for a __single__ structure, for example:
+
+```java
+public VkPhysicalDeviceProperties properties() {
+    var properties = new VkPhysicalDeviceProperties();
+    library.vkGetPhysicalDeviceProperties(this, properties);
+    return properties;
+}
+```
+
+The structure transformer implements the `update` operation accordingly:
+
+```java
+public class StructureTransformer implements Transformer<NativeStructure, MemorySegment> {
+    public BiConsumer<MemorySegment, NativeStructure> update() {
+        return this::update;
+    }
+}
+```
+
+Which iteratively unmarshals each structure field:
+
+```java
+private void update(MemorySegment address, NativeStructure structure) {
+    for(FieldMapping f : mappings) {
+        f.unmarshal(address, structure);
+    }
+}
+```
+
+Note that again this code assumes that the structure has been instantiated by the caller.
+
+## Nested Structures
+
+There is another 'hidden' use-case that only became apparent during refactoring of the physical device.
+
+The queue families for a given device are specified by the following structure:
 
 ```java
 public class VkQueueFamilyProperties implements NativeStructure {
@@ -2055,239 +2005,241 @@ public StructLayout layout() {
 }
 ```
 
-In the native structure the `VkExtent3D` fields are essentially _embedded_ into the parent structure, whereas in the structure class this field obviously has to be an object reference (there is no analog of embedding in Java).  The structure transformer will need to support both _atomic_ fields (i.e. primitives and pointer types) and nested structures.
+In the native structure the `VkExtent3D` fields are essentially _embedded_ into the parent structure, whereas in the Java class this field obviously _has_ to be a reference since there is no analog of embedding in Java.  The structure transformer will need to support both _atomic_ fields (i.e. primitives and references) and nested structures, which unfortunately implies another level of abstraction.
 
-The code that walks through the layout is first modified to include all members except for alignment padding:
-
-```java
-return layout
-    .memberLayouts()
-    .stream()
-    .filter(Predicate.not(e -> e instanceof PaddingLayout))
-    .map(instance::mapping)
-    .toList();
-```
-
-/////////////
+In the `StructureTransformerFactory` the code that walks through the layout is first modified to include all members except for alignment padding:
 
 ```java
-interface FieldMapping {
-    /**
-     * Marshals this field to off-heap memory.
-     * @param structure     Structure
-     * @param address       Off-heap address
-     * @param allocator     Allocator
-     */
-    void marshal(NativeStructure structure, MemorySegment address, SegmentAllocator allocator);
-
-    /**
-     * Unmarshals this field from off-heap memory.
-     * @param address       Off-heap memory
-     * @param structure     Structure
-     */
-    void unmarshal(MemorySegment address, NativeStructure structure);
+private List<FieldMapping> build() {
+    return layout
+        .memberLayouts()
+        .stream()
+        .filter(Predicate.not(e -> e instanceof PaddingLayout))
+        .map(instance::mapping)
+        .toList();
 }
 ```
 
-////////////
-
-To accommodate nested structures the existing field mapping is converted to an interface which is a delegate for the different cases:
+The `mapping` method is refactored accordingly to switch behaviour depending on the type of each member:
 
 ```java
-private interface FieldMapping {
-    void marshal(Object value, MemorySegment address, SegmentAllocator allocator);
-    Object unmarshal(MemorySegment address);
-}
-```
-
-This is composed into the following simple record type with the structure field handle (which is common to both cases):
-
-```java
-private record StructureField(VarHandle field, FieldMapping mapping)
-```
-
-The `mapping` function can now switch behaviour according to the layout of each field:
-
-```java
-private StructureField mapping(MemoryLayout member) {
+private FieldMapping mapping(MemoryLayout member) {
     ...
-
-    FieldMapping mapping = switch(member) {
-        case ValueLayout _ -> atomic(field);
-        case StructLayout nested -> nested(field, nested);
-        default -> throw new IllegalArgumentException(...)
+    FieldMarshal marshal = switch(member) {
+        case ValueLayout _              -> value(path);
+        case SequenceLayout sequence    -> ...
+        case GroupLayout nested         -> nested(path, nested);
+        default -> throw new IllegalArgumentException(...);
     };
-
-    return new StructureField(handle(field), mapping);
+    return new FieldMapping(local, transformer, marshal);
 }
 ```
 
-The existing code is moved to a new field mapping implementation for atomic fields:
+The `SequenceLayout` case handles [Embedded Arrays](#embedded-arrays) which are dealt with below.
+
+The `FieldMapping` class is refactored to delegate to a new abstraction that is responsible for marshalling the different structure field cases:
 
 ```java
-private FieldMapping atomic(Field field) {
-    PathElement path = PathElement.groupElement(field.getName());
+interface FieldMarshal {
+    void marshal(Object value, Transformer transformer, MemorySegment address, SegmentAllocator allocator);
+    Object unmarshal(MemorySegment address, Transformer transformer);
+}
+```
+
+And the existing case for a `ValueLayout` member becomes:
+
+```java
+private FieldMarshal value(PathElement path) {
     VarHandle foreign = layout.varHandle(path);
-    Transformer transformer = registry.get(field.getType());
-    return new AtomicFieldMapping(foreign, transformer);
+    return new AtomicFieldMarshal(foreign);
 }
 ```
 
-A nested structure recursively builds the mappings for the embedded fields:
+Where the code to marshal an _atomic_ structure field is factored out to a new implementation:
 
 ```java
-private FieldMapping nested(Field field, StructLayout nested) {
-    Class<?> type = field.getType();
-    List<StructureField> fields = build(child, nested);
-    Supplier<?> factory = factory(type);
-    return new StructureFieldMapping(factory, fields);
-}
-```
+record AtomicFieldMarshal(VarHandle handle) implements FieldMarshal {
+    public void marshal(Object value, Transformer transformer, MemorySegment address, SegmentAllocator allocator) {
+        Object result = Transformer.marshal(value, transformer, allocator);
+        handle.set(address, result);
+    }
 
-Where `factory` looks up the reflected default constructor for a given structure type.
+    public Object unmarshal(MemorySegment address, Transformer transformer) {
+        Object value = handle.get(address);
 
-A second field mapping implementation for nested structures recursively marshals the embedded fields:
-
-```java
-private record StructureFieldMapping(Supplier<?> constructor, List<StructureField> fields) implements FieldMapping {
-    public void marshal(Object structure, MemorySegment address, SegmentAllocator allocator) {
-        for(var field : fields) {
-            field.marshal(structure, address, allocator);
+        if(MemorySegment.NULL.equals(value)) {
+            return null;
         }
+
+        return transformer.unmarshal().apply(value);
     }
 }
 ```
 
-And similarly for unmarshalling:
+The mapping for a nested structure field can now be created as follows:
 
 ```java
-public Object unmarshal(MemorySegment address) {
-    var structure = constructor.get();
-    unmarshal(address, structure);
-    return structure;
+private FieldMarshal nested(PathElement path, GroupLayout nested) {
+    long offset = layout.byteOffset(path);
+    long size = nested.byteSize();
+    return new SliceFieldMarshal(offset, size);
 }
+```
 
-public void unmarshal(MemorySegment address, Object structure) {
-    for(var field : fields) {
-        field.unmarshal(address, structure);
+Which uses a second field marshalling implementation operating on a _slice_ of the off-heap memory:
+
+```java
+class SliceFieldMarshal implements FieldMarshal {
+    private final long offset;
+    private final long size;
+
+    protected MemorySegment slice(MemorySegment address) {
+        return address.asSlice(offset, size);
     }
 }
 ```
 
-Note that the field is _overwritten_ by a new instance of the nested structure.
+The nested structure field is marshalled by first delegating to the structure transformer and then _copying_ the result to the off-heap memory:
 
-TODO - concludes enumeration, including queue families and device features, all 3 by-ref cases
+```java
+public void marshal(Object value, Transformer transformer, MemorySegment address, SegmentAllocator allocator) {
+    if(value == null) {
+        return;
+    }
 
----
+    var result = (MemorySegment) transformer.marshal(value, allocator);
+    
+    MemorySegment slice = slice(address);
+    slice.copyFrom(result);
+}
+```
+
+And unmarshalling performs the inverse operation:
+
+```java
+public Object unmarshal(MemorySegment address, Transformer transformer) {
+    return transformer.unmarshal().apply(slice(address));
+}
+```
+
+There seems to be considerable overlap between the new `FieldMarshal` implementations and the equivalent `FieldAccessor` used in the array transformer.  A potential future improvement could look at whether both of these can be condensed into a single abstraction, but the above works fine for now.
+
+## Embedded Arrays
 
 ## Conclusion
 
-This section covers the implementation of various edge-cases or features that were deferred above.
+At this point the FFM-based framework now fully supports all the requirements for both GLFW and Vulkan, with the addition of some deferred edge cases covered in the next section.
 
-### Returned Arrays
+The prototype is discarded and refactoring continues with the existing suite of demo applications.
 
-A native method that returns an array is an edge-case for Java since the length of the resultant array cannot be determined from the return value itself.  Generally the length is provided separately, often as an integer-by-reference parameter in the same method.  Therefore a returned array __cannot__ be modelled as a Java array and must be represented by a new, intermediate type:
+----
 
-```java
-public class ReturnedArray<T> {
-    private final MemorySegment address;
-    private final Registry registry;
-}
-```
+# Miscellaneous
 
-Where `<T>` is the array component type.
+## Overview
 
-The `get` method extracts the actual Java array given the length:
+This section covers the implementation of various edge-cases or features that were previously deferred.
 
-```java
-public T[] get(int length, Class<? extends T> type) {
-    ...
-    return array;
-}
-```
+## Native Booleans
 
-The array is first allocated:
+The humble `boolean` caused some problems when JNA was used for the native layer, and FFM continues that trend.
+
+Boolean values are largely only used by Vulkan in structures, in particular the `VkPhysicalDeviceFeatures` and (to a lesser extent) `VkPhysicalDeviceLimits` structures.  However the FFM `JAVA_BOOLEAN` assumes a one-byte layout (as used by Java) whereas Vulkan (and probably every other native library) represent a boolean as a four-byte integer.  These fields _could_ be implemented as primitive integers but that obfuscates their purpose and seems frankly lame.
+
+Therefore the following specialised implementation is used in place of a primitive transformer based on the `JAVA_BOOLEAN` layout:
 
 ```java
-T[] array = (T[]) Array.newInstance(type, length);
-```
+public record NativeBooleanTransformer() implements Transformer<Boolean, Integer> {
+    public static final int TRUE = 1;
+    public static final int FALSE = 0;
 
-And then delegates to the relevant transformer to unmarshal the array elements:
+    public static boolean isTrue(int value) {
+        return value != FALSE;
+    }
 
-```java
-var transformer = (ArrayTransformer) registry.get(type.arrayType());
-MemorySegment data = address.reinterpret(length * transformer.layout().byteSize());
-transformer.update(data, array);
-```
+    public MemoryLayout layout() {
+        return JAVA_INT;
+    }
 
-The new type has a companion transformer to plug into the framework:
+    public Integer marshal(Boolean value, SegmentAllocator allocator) {
+        return value ? TRUE : FALSE;
+    }
 
-```java
-static final class ReturnedArrayTransformer implements AddressTransformer<ReturnedArray<?>, MemorySegment> {
-    private final Registry registry;
-
-    public Object marshal(ReturnedArray<?> arg, SegmentAllocator allocator) {
+    public Object empty() {
         throw new UnsupportedOperationException();
     }
 
-    public ReturnedArray<?> unmarshal(MemorySegment address) {
-        return new ReturnedArray<>(address, registry);
+    public Function<Integer, Boolean> unmarshal() {
+        return NativeBooleanTransformer::isTrue;
+    }
+
+    public Transformer<?, ?> array() {
+        return PrimitiveTransformer.array(this, JAVA_INT);
     }
 }
 ```
 
-Which is instantiated on demand in the `create` method of the registry:
+Note that this implementation treats a non-zero value as `true` but explicitly outputs integer `one` in this case.
+
+This allows `boolean` values to be correctly identified as such while maintaining their native representation as a four-byte integer.
+
+## Returned Arrays
+
+The `glfwGetRequiredInstanceExtensions` API method returns an array of strings where the length is populated as a by-reference side-effect:
+
+```c
+GLFWAPI const char** glfwGetRequiredInstanceExtensions(uint32_t* count);
+```
+
+However the return value for the JOVE implementation __cannot__ be modelled as `String[]` since the length is unknown.
+
+Initially we considered implementing some sort of adapter that encapsulated the underlying string array until the length was available, but this seemed a lot of effort for an edge-case.
+
+There are only a couple of methods in GLFW that return an array (and none in Vulkan) so a more pragmatic approach is to simply return a handle to the array:
 
 ```java
-if(ReturnedArray.class.isAssignableFrom(type)) {
-    return new ReturnedArrayTransformer(this);
+interface DesktopLibrary {
+    Handle glfwGetRequiredInstanceExtensions(IntegerReference count);
 }
 ```
 
-The supported Vulkan extensions can now be retrieved from GLFW:
+This can then be transformed to a string array by the following helper once the length has been determined:
 
 ```java
-public String[] extensions() {
-    NativeReference<Integer> count = factory.integer();
-    ReturnedArray<String> array = lib.glfwGetRequiredInstanceExtensions(count);
-    return array.get(count.get(), String.class);
+public static String[] array(MemorySegment address, int length) {
+    MemorySegment array = address.reinterpret(ValueLayout.ADDRESS.byteSize() * length);
+
+    return IntStream
+        .range(0, length)
+        .mapToObj(n -> array.getAtIndex(ValueLayout.ADDRESS, n))
+        .map(StringTransformer::unmarshal)
+        .toArray(String[]::new);
 }
 ```
 
-Notes:
+The method in the `Desktop` service to retrieve the required Vulkan extensions is now be implemented as follows:
 
-* An unsupported component type will only be detected at runtime in the `get` method, but this seems acceptable given that the `extensions` method is the only such instance in the GLFW or Vulkan APIs.
+```java
+public List<String> extensions() {
+    var count = new IntegerReference();
+    Handle handle = library.glfwGetRequiredInstanceExtensions(count);
+    String[] array = StringTransformer.array(handle.address(), count.get());
+    return List.of(array);
+}
+```
 
-* An invalid array length cannot be bounds checked since the off-heap memory must be resized using the unsafe `reinterpret` method, which can result in a JVM crash.
+## Desktop Callbacks
 
-### Desktop Callbacks
+## Code Generation
 
-TODO
-
-### Code Generation
-
-TODO
-
- and remove the JNA artifacts (imports and the `@FieldOrder` annotation).
-
-### buffers
-
-replace byte buffers with FFM equivalents
-- device memory
-- VK buffers
-- Bufferable mechanism
-- etc
-
----
+----
  
-## Summary
+# Summary
 
-In this chapter
+In this chapter the JNA binding to the native layer was replaced with an FFM based implementation.
 
-Elected to implement a custom FFM implementation and generator
+We elected to implement a custom solution to generate the bindings using an implementation based on a Java proxy, rather than the using the `jextract` tool, for reasons that are documented above.
 
-proxy implementation
+This solution employs a _registry_ of bindings that map JOVE and Java domain types to _transformers_ responsible for marshalling to/from the off-heap memory.
 
-transformer framework
-
-code generator
+Additionally the code generator was also refactored to build the FFM memory layouts of the Vulkan structures.

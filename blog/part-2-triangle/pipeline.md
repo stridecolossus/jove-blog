@@ -114,7 +114,7 @@ To avoid making this chapter overly long only the implementation of the mandator
 
 ### Viewport
 
-The one fixed-function that __must__ always be configured is the _viewport pipeline stage_ which defines the drawing regions of the rasterizer:
+The first fixed-function that __must__ always be configured is the _viewport pipeline stage_ which defines the drawing regions of the rasterizer:
 
 ```java
 public class ViewportStageBuilder extends AbstractPipelineStageBuilder<VkPipelineViewportStateCreateInfo> {
@@ -191,6 +191,92 @@ VkPipelineViewportStateCreateInfo descriptor() {
 ```
 
 Note there are separate fields for the number of viewports and scissors but they __must__ have the same length.
+
+### Colour Blending
+
+The second fixed function to be configured is the _colour blending_ stage, which has some peculiar behaviour (outlined in the class documentation).
+
+Colour blending has two modes of operation: _per attachment_ and _global bitwise_ blending.
+
+The `logicOpEnable` and `logicOp` properties specify the global blending mode:
+
+```java
+public class ColourBlendStage {
+    private VkPipelineColorBlendStateCreateInfo info = new VkPipelineColorBlendStateCreateInfo();
+    private final List<ColourBlendAttachment> attachments = new ArrayList<>();
+
+    public ColourBlendStage() {
+        info.logicOpEnable = false;
+        info.logicOp = VkLogicOp.CLEAR;
+        info.blendConstants = new float[4];
+        Arrays.fill(info.blendConstants, 1);
+    }
+}
+```
+
+The `ColourBlendAttachment` configures blending for each colour attachment of the swapchain:
+
+```java
+public record ColourBlendAttachment(boolean enabled, BlendOperation colour, BlendOperation alpha, Set<VkColorComponent> mask) {
+    /**
+     * Default colour write mask containing <b>all</b> channels.
+     */
+    public static final Set<VkColorComponent> DEFAULT_WRITE_MASK = Set.of(VkColorComponent.values());
+}
+```
+
+Where `BlendOperation` composes the source and destination blending functions:
+
+```java
+public record BlendOperation(VkBlendFactor source, VkBlendOp operation, VkBlendFactor destination)
+```
+
+The descriptor for each attachment is populated as follows:
+
+```java
+private void populate(VkPipelineColorBlendAttachmentState info) {
+    info.blendEnable = enabled;
+    info.srcColorBlendFactor = colour.source;
+    info.dstColorBlendFactor = colour.destination;
+    info.colorBlendOp = colour.operation;
+    info.srcAlphaBlendFactor = alpha.source;
+    info.dstAlphaBlendFactor = alpha.destination;
+    info.alphaBlendOp = alpha.operation;
+    info.colorWriteMask = new EnumMask<>(mask);
+}
+```
+
+Convenience helpers are added to configure the commonly used blending functions for the colour:
+
+```java
+public static BlendOperation colour() {
+    return new BlendOperation(VkBlendFactor.SRC_ALPHA, VkBlendOp.ADD, VkBlendFactor.ONE_MINUS_SRC_ALPHA);
+}
+```
+
+and alpha channels:
+
+```java
+public static BlendOperation alpha() {
+    return new BlendOperation(VkBlendFactor.ONE, VkBlendOp.ADD, VkBlendFactor.ZERO);
+}
+```
+
+For the triangle demonstration blending is disabled and fragment colours are simply passed through to the frame buffer unmodified.
+
+However we are still required to configure the blending configuration for the colour attachment:
+
+```java
+var attachment = new ColourBlendAttachment(
+    false,
+    BlendOperation.colour(),
+    BlendOperation.alpha(),
+    ColourBlendAttachment.DEFAULT_WRITE_MASK
+);
+ColourBlendStage blend = pipeline.blend().add(attachment);
+```
+
+In particular note that the colour write mask of the attachment __must__ be specified irrespective of the chosen blending mode, otherwise colours will be discarded and nothing is rendered!
 
 ---
 
@@ -365,12 +451,12 @@ The vertex shader hard-codes the triangle vertices and passes the colour of each
 ```glsl
 #version 450
 
-layout(location = 0) out vec4 fragColour;
+layout(location = 0) out vec3 fragColour;
 
 vec2 positions[3] = vec2[](
     vec2(0.0, -0.5),
+    vec2(0.5, 0.5),
     vec2(-0.5, 0.5),
-    vec2(0.5, 0.5)
 );
 
 vec3 colours[3] = vec3[](
@@ -381,7 +467,7 @@ vec3 colours[3] = vec3[](
 
 void main() {
     gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-    fragColour = vec4(colours[gl_VertexIndex], 1.0);
+    fragColour = colours[gl_VertexIndex];
 }
 ```
 
@@ -396,12 +482,12 @@ The colour for each vertex is simply passed through to the rasterizer by the fra
 ```glsl
 #version 450
 
-layout(location = 0) in vec4 fragColour;
+layout(location = 0) in vec3 fragColour;
 
 layout(location = 0) out vec4 outColour;
 
 void main() {
-    outColour = fragColour;
+    outColour = vec4(fragColour, 1.0);
 }
 ```
 

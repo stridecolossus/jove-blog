@@ -18,7 +18,7 @@ title: Panama Integration
 
 # Introduction
 
-It had always been the intention at some point to re-implement the Vulkan native layer using the FFM (Foreign Function and Memory) library developed as part of project [Panama](https://openjdk.java.net/projects/panama/).  The reasons for delaying this rework are discussed in [code generation](/jove-blog/blog/part-1-intro/code-generation#alternatives) at the very beginning of the blog.
+It had always been the intention at some point to re-implement the _bindings_ to the Vulkan native layer using the FFM (Foreign Function and Memory) library developed as part of project [Panama](https://openjdk.java.net/projects/panama/).  The reasons for delaying this rework are discussed in [code generation](/jove-blog/blog/part-1-intro/code-generation#alternatives) at the very beginning of the blog.
 
 With the LTS release of JDK 21 the FFM library was elevated to a preview feature (rather than requiring an incubator build) and much more information and tutorials started to appear online, so it was high time to replace JNA with the more future proofed (and safer) FFM solution.
 
@@ -30,7 +30,7 @@ The following section analyses the requirements for the refactoring work.  The r
 
 ## Analysis
 
-A fundamental technical decision that must be addressed immediately is whether to use the `jextract` tool to generate the _bindings_ to the native libraries or to implement a bespoke solution.
+A fundamental technical decision that must be addressed immediately is whether to use the `jextract` tool to generate the bindings or to implement a bespoke solution.
 
 We use the tool and compare and contrast with a theoretical custom implementation built using FFM from first principles.
 
@@ -74,11 +74,11 @@ Despite the advantages of `jextract` the hybrid solution is clearly preferable: 
 
 > In any case the application and/or JOVE would _still_ need to transform domain types to/from the FFM equivalents even if `jextract` was used to generate the underlying bindings.
 
-The generated binding will be retained as it will be a useful resource during development.
+The generated source code will be retained since it will be a useful resource during development.
 
 ## Requirements
 
-With this decision made (for better or worse) the custom framework and refactoring will require the following:
+With this decision made (for better or worse) the custom framework and refactoring will entail the following:
 
 * A one-off task to remove all JNA dependencies from the code base.
 
@@ -251,19 +251,17 @@ public class NativeLibraryFactory {
 ```
 
 Linking the method handle requires an FFM _function descriptor_ derived from the _signature_ of the native method:
-
-```java
-private FunctionDescriptor descriptor(Method method) {
-}
-```
-
 First the memory layout of the method is derived from its parameters:
 
 ```java
-MemoryLayout[] layouts = Arrays
-    .stream(method.getParameterTypes())
-    .map(this::layout)
-    .toArray(MemoryLayout[]::new);
+private FunctionDescriptor descriptor(Method method) {
+    MemoryLayout[] layouts = Arrays
+        .stream(method.getParameterTypes())
+        .map(this::layout)
+        .toArray(MemoryLayout[]::new);
+
+    ...       
+}
 ```
 
 Where `layout` is a temporary, quick-and-dirty mapper that just supports the integer primitives used in the prototype:
@@ -295,8 +293,7 @@ Finally the method handle is linked to the native library:
 
 ```java
 public NativeMethod build() {
-    MemoryLayout[] layout = ...
-    FunctionDescriptor descriptor = descriptor(method.getReturnType(), layout);
+    FunctionDescriptor descriptor = descriptor(method);
     MethodHandle handle = linker.downcallHandle(descriptor).bindTo(address);
     return new NativeMethod(handle);
 }
@@ -399,7 +396,7 @@ private NativeMethod build(Method method) {
 Where the temporary `layout` method now returns a transformer:
 
 ```java
-private static Transformer layout(Class<?> type) {
+private static Transformer transformer(Class<?> type) {
     if(type == int.class) {
         return new PrimitiveTransformer<>(ValueLayout.JAVA_INT);
     }
@@ -467,7 +464,7 @@ private Object unmarshal(Object result) {
 
 ## Basic Transformers
 
-To fully explore GLFW using the new framework the prototype will be extended to create a native window, which requires support for strings and a `Handle` to the window.
+To fully explore GLFW using the new framework the prototype will be extended to create a native window, which requires support for strings and the `Handle` to the window.
 
 String values are supported by the following companion transformer:
 
@@ -520,7 +517,7 @@ public static class HandleTransformer implements Transformer<Handle, MemorySegme
 Finally the newly supported types are included in the `layout` mapping:
 
 ```java
-private static Transformer layout(Class<?> type) {
+private static Transformer transformer(Class<?> type) {
     if(type == int.class) {
         return new PrimitiveTransformer<>(ValueLayout.JAVA_INT);
     }
@@ -575,7 +572,7 @@ api.glfwDestroyWindow(window);
 api.glfwTerminate();
 ```
 
-The method to create the window passes `null` for some of the arguments, therefore the `Handle` transformer returns the special `MemorySegment.NULL` value in this case:
+The method to create the window passes `null` for some of the arguments, therefore the `Handle` transformer returns the special `NULL` constant in this case:
 
 ```java
 public MemorySegment marshal(Handle arg, SegmentAllocator allocator) {
@@ -688,7 +685,7 @@ Where the refactored `create` method registers the transformers required for GLF
 public static Desktop create() {
     // Init registry
     var registry = new Registry();
-    PrimitiveTransform.register(registry);
+    PrimitiveTransformer.register(registry);
     registry.register(String.class, new StringTransformer());
     registry.register(Handle.class, new HandleTransformer());    
     
@@ -727,7 +724,7 @@ void main() throws Exception {
 
 ## Introduction
 
-Although a basic FFM-based marshalling framework in now in place, as mentioned previously Vulkan is very front-loaded with complexities.
+Although a basic FFM-based marshalling framework is now in place, as mentioned previously Vulkan is very front-loaded with complexities.
 
 The first step instantiates the Vulkan instance using the following native API method:
 
@@ -1039,47 +1036,27 @@ In summary the process of determining the transformer for a given type now becom
 
 The handle of the created instance is returned as a _pointer_ specified as a by-reference `MemorySegment`, i.e. a mutable address.
 
-The following new template class implements a by-reference parameter that holds a _pointer_ to the off-heap memory:
+The following new template class implements a by-reference parameter that holds the _pointer_ to the off-heap memory:
 
 ```java
 public abstract class NativeReference<T> {
-    private T value;
+    private final AddressLayout layout;
     private MemorySegment pointer;
-
-    public T get() {
-        if(pointer != null) {
-            value = update(pointer);
-        }
-        return value;
-    }
-
-    protected abstract T update(MemorySegment pointer);
+    private T value;
+    
+    protected abstract T update(MemorySegment pointer, AddressLayout layout);
 }
 ```
 
-A general `Pointer` dereferences the address of the handle:
+The referenced value is retrieved from the off-heap on demand by the accessor:
 
 ```java
-public class Pointer extends NativeReference<Handle> {
-    protected T update(MemorySegment pointer) {
-        MemorySegment address = pointer.get(ValueLayout.ADDRESS, 0L);
-        if(MemorySegment.NULL.equals(address)) {
-            return null;
-        }
-        else {
-            return new Handle(address);
-        }
+public T get() {
+    if((value == null) && (pointer != null)) {
+        value = update(pointer, layout);
     }
-}
-```
 
-Although not required yet, the implementation for an integer reference is relatively trivial:
-
-```java
-public class IntegerReference extends NativeReference<Integer> {
-    protected Integer update(MemorySegment pointer) {
-        return pointer.get(ValueLayout.JAVA_INT, 0L);
-    }
+    return value;
 }
 ```
 
@@ -1109,6 +1086,53 @@ private MemorySegment allocate(SegmentAllocator allocator) {
 ```
 
 Note that a by-reference value can logically only ever be used as a method parameter.
+
+A general `Pointer` can now be implemented for by-reference memory addresses:
+
+```java
+public class Pointer extends NativeReference<Handle> {
+    /**
+     * Default constructor for a simple pointer.
+     */
+    public Pointer() {
+        super(AddressLayout.ADDRESS);
+    }
+
+    /**
+     * Constructor for a memory block of the given size.
+     * @param size Block size (bytes)
+     */
+    public Pointer(long size) {
+        super(AddressLayout.ADDRESS.withTargetLayout(MemoryLayout.sequenceLayout(size, ValueLayout.JAVA_BYTE)));
+    }
+}
+```
+
+The layout of the off-heap address is retained in order to preserve the size of the memory, which avoids having to `reinterpret` memory segments later on.
+
+A pointer dereferences the address of the handle:
+
+```java
+protected Handle update(MemorySegment pointer, AddressLayout layout) {
+    MemorySegment address = pointer.get(layout, 0L);
+    if(MemorySegment.NULL.equals(address)) {
+        return null;
+    }
+    return new Handle(address);
+}
+```
+
+Although not required yet, the implementation for an integer reference is relatively trivial to implement:
+
+```java
+public class IntegerReference extends NativeReference<Integer> {
+    protected Integer update(MemorySegment pointer, AddressLayout layout) {
+        return pointer.get(ValueLayout.JAVA_INT, 0L);
+    }
+}
+```
+
+Finally to support unit-testing the referenced value can be `set` explicitly overriding any subsequent updates.
 
 ### Integration
 
@@ -1142,7 +1166,11 @@ interface Library {
 }
 ```
 
-Note that array parameters are now explicitly declared as Java arrays.  Previously these had to be specified as a __single__ instance since JNA mandated that a contiguous block was represented by the __first__ element of an array.
+Note that array parameters are now explicitly declared as Java arrays, with the following benefits:
+
+* Previously array parameters had to be specified as a __single__ instance since JNA mandated that a contiguous block was represented by the __first__ element of an array.
+
+* The code to populate arrays in Vulkan structures can now properly use streams and collections, rather than the awkward approach JNA forced on the developer, where the array __had__ to be allocated from another instance and then 'filled' element by element.
 
 The final change is to refactor the factory method that instantiates the Vulkan library:
 
@@ -1668,9 +1696,9 @@ public Function<MemorySegment, NativeStructure> unmarshal() {
 
 Note that the `factory` constructed above is also used here to instantiate the new structure instance.
 
-Diagnostic handlers can now be attached to the instance as before, which is very useful given the invasive changes being made to JOVE.
+Diagnostic handlers can now be attached to the instance as before, which is very useful given the invasive changes being made to JOVE.  A good test of the refactor is to temporarily remove the code that releases attached handlers when the instance is destroyed, which should result in Vulkan complaining about orphaned objects.
 
-A good test of the refactor is to temporarily remove the code that releases attached handlers when the instance is destroyed, which should result in Vulkan complaining about orphaned objects.
+There is a fair amount of hard-coded FFM logic here that will (hopefully) be simplified when callbacks for GLFW are addressed later.
 
 ----
 
@@ -1726,6 +1754,16 @@ interface Library {
 
 Other than refactoring the library the remainder of the `PhysicalDevice` class remains as-is.
 
+A _native parameter_ is introduced that composes the transformer and a flag indicating whether the annotation is present:
+
+```java
+private NativeParameter parameter(Parameter parameter) {
+    Transformer transformer = registry.transformer(parameter.getType()).orElseThrow(...);
+    final boolean updated = parameter.isAnnotationPresent(Updated.class);
+    return new NativeParameter(transformer, updated);
+}
+```
+
 A by-reference parameter is unmarshalled via a new operation on the transformer interface:
 
 ```java
@@ -1733,33 +1771,6 @@ public interface Transformer<T, N> {
     default BiConsumer<N, T> update() {
         throw new UnsupportedOperationException();
     }
-}
-```
-
-The annotation is tested in the native library factory:
-
-```java
-private static boolean isUpdatedParameter(Parameter parameter) {
-    return NativeReference.class.isAssignableFrom(parameter.getType()) || parameter.isAnnotationPresent(Updated.class);
-}
-```
-
-Note that a `NativeReference` is also implicitly treated as a by-reference type by this test.  The class is slightly refactored and the companion transformer now implements the new `update` operation:
-
-```java
-public static class NativeReferenceTransformer implements Transformer<NativeReference<?>, MemorySegment> {
-    public BiConsumer<MemorySegment, NativeReference<?>> update() {
-        return (address, reference) -> reference.update(address);
-    }
-}
-```
-
-A _native parameter_ now composes the transformer and an additional flag indicating whether it is being accessed by-reference:
-
-```java
-private NativeParameter parameter(Parameter parameter) {
-    Transformer transformer = registry.transformer(parameter.getType()).orElseThrow(...);
-    return new NativeParameter(transformer, isUpdatedParameter(parameter));
 }
 ```
 
@@ -1781,7 +1792,7 @@ public static class NativeParameter {
 }
 ```
 
-A new stage is added in the native method to perform an update after invocation:
+And new step is added in the native method to perform the update after invocation:
 
 ```java
 public Object invoke(Object[] args) {
@@ -1792,7 +1803,7 @@ public Object invoke(Object[] args) {
 }
 ```
 
-Where the new `update` method delegates to the transformer to overwrite each by-reference parameter as required:
+The `update` method delegates to the transformer to overwrite each by-reference parameter as required:
 
 ```java
 private void update(Object[] args, Object[] foreign) {
@@ -1819,6 +1830,8 @@ private void update(Object[] args, Object[] foreign) {
 ```
 
 The framework now supports the general notion of by-reference parameters and the individual use-cases identified above can now be addressed.
+
+Note that the `IntegerReference` and `Pointer` types are special cases that operate independently of the above.
 
 ## Updated Parameters
 
@@ -1876,7 +1889,7 @@ An API method that returns a by-reference array of structures such as `vkGetPhys
 
 2. Each element of the off-heap array is itself a compound block of memory.
 
-The elements of an array with a reference component type (such as strings) can be accessed using a `VarHandle`.  Unfortunately FFM does not seem to provide an equivalent mechanism to access structure elements.  Array handles _can_ be retrieved for the individual __fields__ of a structure array but not for the elements themselves.  It is worth noting that the `jextract` equivalent generally abandons handles and accesses the off-heap memory directly, often using nasty hard-coded byte offsets.
+The elements of an array with a reference component type (such as strings) can be accessed using a `VarHandle`.  Unfortunately FFM does not seem to provide an equivalent mechanism to access structure elements.  Array handles _can_ be retrieved for the individual __fields__ of a structure array but not for the elements themselves.  It is worth noting that for these cases the `jextract` equivalent generally abandons handles and accesses the off-heap memory directly, often using nasty hard-coded byte offsets.
 
 Therefore the following abstraction is introduced to the array transformer to retrieve and modify the off-heap array elements for the different cases:
 
@@ -2031,7 +2044,7 @@ private FieldMapping mapping(MemoryLayout member) {
 }
 ```
 
-The `SequenceLayout` case handles [Embedded Arrays](#embedded-arrays) which are dealt with below.
+The `SequenceLayout` case covers fixed or variable length array fields which are dealt with [later](#sequence-layout).
 
 The `FieldMapping` class is refactored to delegate to a new abstraction that is responsible for marshalling the different structure field cases:
 

@@ -48,6 +48,7 @@ The [Vulkan Object Index](blog/part-1-intro/vulkan-index) links to the relevant 
     - [Terrain Tesselation](blog/part-5-terrain/tesselation)
     - [Miscellany](blog/part-5-terrain/miscellany)
     - [Panama Refactor](blog/part-5-terrain/panama)
+    - [Swapchain Recreation](blog/part-5-terrain/swapchain-recreation)
 
 ---
 

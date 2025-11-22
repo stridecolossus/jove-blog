@@ -208,7 +208,7 @@ private void init() {
 
 And properties dependant on the surface can be initialised as required by a new method:
 
-```
+```java
 public Builder init(VkSurfaceCapabilitiesKHR capabilities) {
     info.minImageCount = capabilities.minImageCount;
     info.preTransform = capabilities.currentTransform;
@@ -315,6 +315,45 @@ public class PresentationModeSwapchainConfiguration implements SwapchainConfigur
 
 Note that if none of the candidates are available this logic falls back to the default mode (`FIFO_KHR` guaranteed on all platforms).
 
+### Surface Format
+
+A preferred surface format is selected from those supported by the surface:
+
+```java
+public class SurfaceFormatSwapchainConfiguration implements SwapchainConfiguration {
+    private final SurfaceFormatWrapper format;
+
+    public void configure(Builder builder, Properties properties) {
+        final VkSurfaceFormatKHR selected = properties
+                .formats()
+                .stream()
+                .filter(format::equals)
+                .findAny()
+                .orElse(properties.formats().getFirst());
+
+        builder.format(selected);
+    }
+```
+
+Where the following convenience wrapper compares the structure by equality:
+
+```java
+public static class SurfaceFormatWrapper extends VkSurfaceFormatKHR {
+    public SurfaceFormatWrapper(VkFormat format, VkColorSpaceKHR space) {
+        this.format = format;
+        this.colorSpace = space;
+    }
+
+    public boolean equals(Object obj) {
+        return
+                (obj == this) ||
+                (obj instanceof VkSurfaceFormatKHR that) &&
+                (this.format == that.format) &&
+                (this.colorSpace == that.colorSpace);
+    }
+}
+```
+
 ### Image Count
 
 The number of swapchain images (i.e. colour attachments) is configured by a _policy_ applied to the surface capabilities:
@@ -390,7 +429,7 @@ public class ExtentSwapchainConfiguration implements SwapchainConfiguration {
 }
 ```
 
-The `configure` method first checks for the special case:
+The `configure` method first handles the normal case:
 
 ```java
 var capabilities = properties.capabilities();
@@ -438,14 +477,6 @@ int w = Math.clamp(size.width(),  min.width,  max.width);
 int h = Math.clamp(size.height(), min.height, max.height);
 builder.extent(new Dimensions(w, h));
 ```
-
-### Surface Format
-
-```java
-public class SurfaceFormatSwapchainConfiguration implements SwapchainConfiguration {
-```
-
-SurfaceFormatWrapper
 
 ---
 
@@ -514,6 +545,8 @@ public class RenderTask implements Runnable, TransientObject {
     }
 }
 ```
+
+Note that the task blocks until all pending rendering work has completed before recreating the swapchain.
 
 ---
 

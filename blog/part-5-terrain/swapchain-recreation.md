@@ -24,7 +24,9 @@ However the current implementation has several problems that should also be addr
 
 1. The swapchain has several properties that are dependant on the rendering surface, several of which entail logic to select the appropriate configuration.  This logic is currently spread across the surface, the swapchain, and its companion builder, which is messy and difficult to test.
 
-2. The rendering surface is a plain `Handle` until it is composed with the physical device.  Ideally this will be a single component, making the code more explicit and easier to follow.
+2. The rendering surface is a plain `Handle` until it is composed with the physical device.  However this handle is not used elsewhere and should be encapsulated into the surface component.
+
+TODO - this makes no sense...
 
 3. The surface handle is derived from the GLFW window and the Vulkan instance, however the surface _properties_ are also dependant on the selected physical device.  This makes the existing surface class overly complex and hard to test.
 
@@ -38,11 +40,11 @@ The swapchain and surface will therefore be (hopefully) simplified and the logic
 
 First the surface class is refactored:
 
-* The surface handle is composed into the new class.
+* The handle is encapsulated into the class and derived from the window explicitly.
 
-* The various selection methods are removed, to be replaced with a cleaner mechanism later.
+* The various selection methods are removed (to be replaced with a cleaner mechanism below).
 
-The resultant class is now simpler and explicitly dependant on the window and instance:
+The resultant class is now simpler and makes the dependencies explicit:
 
 ```java
 public class VulkanSurface extends TransientNativeObject {
@@ -121,7 +123,7 @@ This approach results in a much simpler and more cohesive implementation, and pr
 
 ## Swapchain
 
-To facilitate recreation of the swapchain a new exception is introduced indicating that the swapchain has been invalidated:
+A new exception is introduced indicating that the swapchain has been invalidated:
 
 ```java
 public class Swapchain extends VulkanObject {

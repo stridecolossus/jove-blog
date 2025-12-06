@@ -1,4 +1,4 @@
----
+			---
 title: Panama Integration
 ---
 
@@ -479,12 +479,17 @@ public class StringTransformer implements Transformer<String, MemorySegment> {
     }
 
     public static String unmarshal(MemorySegment address) {
-        return address.reinterpret(Integer.MAX_VALUE).getString(0L);
+        if(address.byteSize() == 0L) {
+            return address.reinterpret(Integer.MAX_VALUE).getString(0L);
+        }
+        else {
+            return address.getString(0L);
+        }
     }
 }
 ```
 
-Note that `reinterpret` is an _unsafe_ operation that can result in a JVM crash for an out-of-bounds memory access, since the actual memory size cannot be guaranteed by the JVM.  Additionally this method is _restricted_ and generates a runtime warning suppressed by the following VM argument:
+If the length of the string is unknown the off-heap memory is a _variable length array_ which is resized by the `reinterpret` method. Note that `reinterpret` is an _unsafe_ operation that can result in a JVM crash for an out-of-bounds memory access, since the actual memory size cannot be guaranteed by the JVM.  Additionally this method is _restricted_ and generates a runtime warning suppressed by the following VM argument:
 
 ```
 --enable-native-access=ALL-UNNAMED
@@ -1624,9 +1629,11 @@ private static MemorySegment link(MethodHandle handle) {
         ADDRESS,
         ADDRESS
     );
-    return Linker.nativeLinker().upcallStub(binding, descriptor, Arena.ofAuto());
+    return Linker.nativeLinker().upcallStub(binding, descriptor, Arena.global());
 }
 ```
+
+Note that that linker uses the _global_ arena in this case, otherwise the upcall will fail.
 
 The `build` method of the handler is modified to lookup the transformer for the message structure:
 
@@ -2135,17 +2142,483 @@ There seems to be considerable overlap between the new `FieldMarshal` implementa
 
 ## Sequence Layout
 
+TODO
+
 VkPhysicalDeviceMemoryProperties - actual arrays
 VkPhysicalDeviceProperties - arrays -> string
 VkDeviceQueueCreateInfo - primitive arrays
 
 ## Conclusion
 
-At this point the FFM-based framework now fully supports all the requirements for both GLFW and Vulkan, with the addition of some deferred edge cases covered in the next section.
+At this point the FFM-based framework now fully supports most of the requirements for both GLFW and Vulkan, with the addition of some deferred edge cases covered in the next section.
 
-The prototype is discarded and refactoring continues with the existing suite of demo applications.
+The prototype is discarded and refactoring continues with the existing suite of demo application and refactoring of the code generator (in the next section).
 
 ----
+
+# Code Generation
+
+## Background
+
+not into detail since
+refactor previous iteration based on JNA
+parser -> metadata remains roughly same
+possibly replace with proper grammar / AST approach, e.g. ANTLR
+
+major change is introduction of generation of the FFM memory layout for structures
+
+issues faced, ambiguities:
+
+enumerations as integer or as bitfields, cannot be done in Java, one or other - not both
+bitfield named FlagBits
+but typedefs -> VkFlags end with Flags
+but not consistent anyway
+and also some typedefs for types that do not actually exist, e.g. VkInstanceCreateFlags in VkInstanceCreateInfo
+basically a mess
+
+C pointers and arrays are indistinguishable
+ptr to single structure:		const VkApplicationInfo* pApplicationInfo;
+ptr to array of structures:		const VkDeviceQueueCreateInfo* pQueueCreateInfos;
+ptr to primitive array:			const float* pQueuePriorities;
+
+ambiguous / weird mappings
+e.g. shader pCode is a uint32_t* but is SPIV bytes WTF!
+but pQueueFamilyIndices is a pointer to an int[]
+
+## Type Mapping
+
+To support the changes for structure generation, the existing type mapper is completely overhauled
+
+TODO ~ tidy up the code!!!
+
+use cases
+
+primitives
+standard C types, e.g. uint32_t
+char*
+char**
+void*
+VkBool32 special case (again)
+pointers ~ plurality -> handle or array, ropey but works (just)
+enumerations/masks - nasty
+char[] -> String
+
+summarise in table again? simpler than the code!!!
+
+
+
+```java
+record StructureField<T>(String name, T type, int length)
+```
+
+```java
+public record NativeType(String name, MemoryLayout layout)
+```
+
+## Structure Generator
+
+### Overview
+
+The major change for the structure generator is the addition of the requirement to also generate the source code for the FFM memory layout.
+
+This will entail:
+
+* Refactoring of the existing generator in terms of the revised type mapper.
+
+* Generation of the memory layout from the mapped structure fields.
+
+* Additional logic to correctly align data within memory.
+
+The design for generation of the memory layout splits the process into two steps:
+
+1. Generate an actual FFM memory layout from the structure fields.
+
+2. Transform the layout to source code.
+
+While this may seem a little backwards (and the process could easily be done in one transformation), generating an FFM layout will leverage the built-in validation for possible bugs such as invalid field or structure alignment, bad layouts, etc.  The resultant code should also be more coherent and easier to unit-test.
+
+### Refactor
+
+First the domain type of each field is determined from the type mapper:
+
+```java
+List<StructureField<NativeType>> fields = structure
+	.fields()
+	.stream()
+	.map(this::map)
+	.toList();
+```
+
+Where `map` TODO
+
+```java
+private StructureField<NativeType> map(StructureField<String> field) {
+	TODO
+}
+```
+
+The template arguments are now derived from the mapped fields:
+
+```java
+Map<String, Object> arguments = fields
+	.stream()
+	.map(StructureGenerator::arguments)
+	.toList();
+```
+
+Which delegates to the following helper:
+
+```java
+private static Map<String, Object> arguments(StructureField<NativeType> field) {
+	return Map.of(
+		"name",	field.name(),
+		"type",	field.type().name()
+	);
+}
+```
+
+And the final set of arguments is constructed, with the addition of the new `layout` argument (implemented below):
+
+```java
+return Map.of(
+	"name",		structure.name(),
+	"fields",	arguments,
+	"layout",	layout
+);
+```
+
+### Alignment
+
+_Data alignment_ is the aligning of fields according to their _natural alignment_, meaning the memory location _must_ be some multiple of the _word_ size of the platform (8 bytes by default).  See [Wikipedia](https://en.wikipedia.org/wiki/Data_structure_alignment).
+
+The natural alignment for each data type can be summarised as some multiple of the word size as follows (for an 8-byte word):
+
+* bytes - none.
+
+* short - even bytes only.
+
+* int - either the lower or upper 4 bytes
+
+* long / address - beginning of a word boundary.
+
+This may require the injection of _padding_:
+
+1. _between_ the fields of a structure.
+
+2. or at the end of a structure accessed via a pointer (or implicitly as an array element).
+
+Note that this second constraint does not apply to nested structures since their fields are essentially 'embedded' into the parent structure.
+
+These alignment constraints are implemented by the following helper:
+
+```java
+class FieldAlignment {
+	private final long word;
+
+	private long total;
+	private long max;
+
+	public FieldAlignment() {
+		this(8);
+	}
+
+	public FieldAlignment(int word) {
+		if(!MathsUtility.isPowerOfTwo(word)) {
+			throw new IllegalArgumentException(...);
+		}
+		this.word = requireOneOrMore(word);
+	}
+}
+```
+
+The `padding` method calculates the amount of padding required for each field:
+
+```java
+public long padding(MemoryLayout layout) {
+	// Determine required padding for the next layout
+	long alignment = layout.byteAlignment();
+	long padding = (alignment - (total % word)) % alignment;
+
+	// Track alignment
+	total += padding + layout.byteSize();
+	max = Math.max(max, alignment);
+
+	return padding;
+}
+```
+
+Note that this is a mutable class that accumulates the alignment as a side effect:
+
+* The `total` is the overall size of the structure.
+
+* And `max` tracks the size of its _largest_ member.
+
+The padding required to align the overall structure is calculated by a second method:
+
+```java
+public long padding() {
+	if(total == 0) {
+		return 0;
+	}
+	return total % max;
+}
+```
+
+### Layout Builder
+
+A new component builds the FFM memory layout for a given structure:
+
+```java
+var builder = new LayoutBuilder();
+GroupLayout group = builder.layout(structure.name(), structure.group(), fields);
+```
+
+The builder iterates through the structure and determines the memory layout of each field, injecting padding as required:
+
+```java
+class LayoutBuilder {
+	public GroupLayout layout(String name, GroupType type, List<StructureField<NativeType>> fields) {
+		// Build field layouts and inject alignment padding as required
+		MemoryLayout[] layouts = fields
+			.stream()
+			.map(LayoutBuilder::layout)
+			.gather(padding())
+			.toArray(MemoryLayout[]::new);
+
+		// Build group layout
+		GroupLayout group = switch(type) {
+			case STRUCT -> MemoryLayout.structLayout(layouts);
+			case UNION	-> MemoryLayout.unionLayout(layouts);
+		};
+
+		return group;
+	}
+}
+```
+
+The `layout` method extracts the relevant information from the mapped structure field:
+
+```java
+private static MemoryLayout layout(StructureField<NativeType> field) {
+	MemoryLayout layout = field.type().layout();
+	MemoryLayout actual = layout(layout, field.length());
+	return actual.withName(field.name());
+}
+```
+
+Where array fields are wrapped as a sequence layout:
+
+```java
+private static MemoryLayout layout(MemoryLayout layout, int length) {
+	if(length == 0) {
+		return layout;
+	}
+	else {
+		return MemoryLayout.sequenceLayout(length, layout);
+	}
+}
+```
+
+The alignment helper is wrapped as a stream gatherer to inject padding into the resultant layout:
+
+```java
+private static Gatherer<MemoryLayout, FieldAlignment, MemoryLayout> padding() {
+	return Gatherer.ofSequential(
+		FieldAlignment::new,
+		LayoutBuilder::inject,
+		LayoutBuilder::append
+	);
+}
+```
+
+The `inject` method is an _integrator_ that applies the alignment logic for each field:
+
+```java
+private static boolean inject(FieldAlignment alignment, MemoryLayout layout, Downstream<? super MemoryLayout> downstream) {
+	// Inject padding as required
+	long padding = alignment.align(layout);
+	add(padding, downstream);
+
+	// Append field layout
+	downstream.push(layout);
+
+	return true;
+}
+```
+
+Where `add` injects padding into the resultant structure layout:
+
+```java
+private static void add(long alignment, Downstream<? super MemoryLayout> downstream) {
+	if(alignment > 0) {
+		var padding = MemoryLayout.paddingLayout(alignment);
+		downstream.push(padding);
+	}
+}
+```
+
+Conveniently a gatherer has a _finisher_ which is used to append padding as required to align the structure to the size of the largest member:
+
+```java
+private static void append(FieldAlignment alignment, Downstream<? super MemoryLayout> downstream) {
+	add(alignment.padding(), downstream);
+}
+```
+
+### Layout Writer
+
+A second new component generates the source code for the structure layout:
+
+```java
+var writer = new LayoutWriter();
+String layout = writer.write(group);
+```
+
+The writer prints the layout of each structure member:
+
+```java
+String fields = group
+	.memberLayouts()
+	.stream()
+	.map(this::member)
+	.collect(joining(","));
+```
+
+Where `member` outputs the textual representation of the layout with a quoted field name declaration:
+
+```java
+private String member(MemoryLayout layout) {
+	if(layout instanceof PaddingLayout padding) {
+		return write(padding);
+	}
+
+	String name = layout.name().orElseThrow(...);
+	return String.format("%s.withName(%s)", write(layout), quote(name));
+}
+```
+
+The writer switches over the sealed type to recursively generate the source code for a given layout:
+
+```java
+protected String write(MemoryLayout layout) {
+	return switch(layout) {
+		case AddressLayout _			-> "POINTER";
+		case ValueLayout value			-> write(value);
+		case SequenceLayout sequence	-> write(sequence);
+		case GroupLayout group			-> write(group);
+		case PaddingLayout padding		-> write(padding);
+	};
+}
+```
+
+Primitive types are output as the classname of the carrier type:
+
+```java
+private static String write(ValueLayout value) {
+	return "JAVA_" + value.carrier().getSimpleName().toUpperCase();
+}
+```
+
+An array is represented by a sequence layout:
+
+```java
+private String write(SequenceLayout sequence) {
+	long length = sequence.elementCount();
+	MemoryLayout component = sequence.elementLayout();
+	return String.format("MemoryLayout.sequenceLayout(%d, %s)", length, write(component));
+}
+```
+
+And padding layouts use the convenience `PADDING` constant where applicable:
+
+```java
+private static String write(PaddingLayout padding) {
+	if(padding.byteSize() == 4) {
+		return "PADDING";
+	}
+	else {
+		return String.format("MemoryLayout.paddingLayout(%d)", padding.byteSize());
+	}
+}
+```
+
+Finally the resultant source code is wrapped depending on whether the layout is a structure or a union:
+
+```java
+String type = switch(group) {
+	case StructLayout _ -> "structLayout";
+	case UnionLayout _	-> "unionLayout";
+};
+return String.format("MemoryLayout.%s(%s)", type, fields);
+```
+
+A couple of features have been omitted for brevity:
+
+* Indentation.
+
+* Structure layouts with a single field are inlined.
+
+### Template
+
+The generated arguments and layout are injected into the Velocity template to generate the source code.
+
+The template itself is now much simpler:
+
+```java
+package org.sarge.jove.platform.vulkan;
+
+import static java.lang.foreign.ValueLayout.*;
+
+import java.lang.foreign.*;
+
+import org.sarge.jove.foreign.NativeStructure;
+import org.sarge.jove.common.Handle;
+import org.sarge.jove.util.EnumMask;
+import org.sarge.jove.platform.vulkan.*;
+
+/**
+ * Vulkan structure.
+ * This class has been code-generated.
+ */
+public class $name implements NativeStructure {
+#foreach($field in $fields)
+	public $field.type $field.name;
+#end
+
+	@Override
+	public GroupLayout layout() {
+		return $layout;
+	}
+}
+```
+
+The following example native structure illustrates several of the 
+
+- Enumerations: the `sType` and `sharingMode` fields.
+
+- Pointers to `void*`
+
+TODO
+
+```C
+```
+
+The generated source code (excluding imports and comments) for this structure is:
+
+```java
+```
+
+## Enumerations
+
+The enumeration generator is largely unaffected by the Panama refactor, however there are a few modifications for other reasons:
+
+A handy feature of the existing code was automatic generation of the `sType` field for top-level structures, leveraging the consistent naming convention in the `VkStructureType` enumeration.  However in more recent iterations of the Vulkan API there are several structures that deviate from this convention, or in some cases do not have an entry in the enumeration.  Therefore unfortunately this logic is removed and the field is populated programatically throughout.
+
+Previously many of the enumerations contained a number of _synthetic_ constants that were omitted by the generator to reduce the number of constants.  However more recent iterations of the API only seem to contain `MAX_ENUM` so this is less of a problem.  Also several of the enumerations would be empty other than this synthetic entry, so this logic is largely redundant and is therefore removed.
+
+Finally, the generator truncates the constant names to remove the classname prefix.  This results in an edge case where the resultant name may have a leading numeric, which is obviously not a valid Java identifier.  The logic for this case is modified to 'walk' back one word in the truncated name, which is simpler than the previous behaviour that attempted to 'translate' the numeric.
+
+---
 
 # Miscellaneous
 
@@ -2243,12 +2716,7 @@ public List<String> extensions() {
 
 ## Desktop Callbacks
 
-## Code Generation
-
-AST -> fields[]
-field -> FFM types, including sequences
-inject padding
-template
+TODO
 
 ----
  

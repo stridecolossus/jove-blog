@@ -1,4 +1,4 @@
-			---
+---
 title: Panama Integration
 ---
 
@@ -11,6 +11,7 @@ title: Panama Integration
 - [Framework](#framework)
 - [Vulkan Instance](#vulkan-instance)
 - [Physical Device](#physical-device)
+- [Code Generation](#code-generation)
 - [Miscellaneous](#miscellaneous)
 - [Summary](#summary)
 
@@ -250,7 +251,8 @@ public class NativeLibraryFactory {
 }
 ```
 
-Linking the method handle requires an FFM _function descriptor_ derived from the _signature_ of the native method:
+Linking the method handle requires an FFM _function descriptor_ derived from the _signature_ of the native method.
+
 First the memory layout of the method is derived from its parameters:
 
 ```java
@@ -299,7 +301,7 @@ public NativeMethod build() {
 }
 ```
 
-In the prototype the FFM `SymbolLookup` first loads the native library:
+In the prototype the native GLFW library is loaded by the FFM `SymbolLookup` class:
 
 ```java
 SymbolLookup lookup = SymbolLookup.libraryLookup("glfw3", Arena.ofAuto());
@@ -307,7 +309,7 @@ var factory = new NativeLibraryFactory(lookup);
 API api = ...
 ```
 
-And should now invoke GLFW natively when executed.  Nice.
+And the API calls should now delegate to GLFW natively when executed.  Cool.
 
 To summarise, the new framework:
 
@@ -519,7 +521,7 @@ public static class HandleTransformer implements Transformer<Handle, MemorySegme
 }
 ```
 
-Finally the newly supported types are included in the `layout` mapping:
+Finally the newly supported types are included in the layout mapper:
 
 ```java
 private static Transformer transformer(Class<?> type) {
@@ -592,7 +594,7 @@ This conditional logic will be replaced with a more holistic approach shortly.
 
 ## Registry
 
-Before proceeding further the temporary `layout` bodge is replaced with a _registry_ that maps a domain type to its corresponding transformer:
+Before proceeding further the temporary layout mapper bodge is replaced with a _registry_ that maps a domain type to its corresponding transformer:
 
 ```java
 public class Registry {
@@ -1053,7 +1055,7 @@ public abstract class NativeReference<T> {
 }
 ```
 
-The referenced value is retrieved from the off-heap on demand by the accessor:
+The referenced value is retrieved from the off-heap memory on demand in the accessor:
 
 ```java
 public T get() {
@@ -1175,7 +1177,7 @@ Note that array parameters are now explicitly declared as Java arrays, with the 
 
 * Previously array parameters had to be specified as a __single__ instance since JNA mandated that a contiguous block was represented by the __first__ element of an array.
 
-* The code to populate arrays in Vulkan structures can now properly use streams and collections, rather than the awkward approach JNA forced on the developer, where the array __had__ to be allocated from another instance and then 'filled' element by element.
+* The code to populate arrays in Vulkan structures can now properly use streams and collections, rather than the awkward approach JNA forced on the developer, where the array __had__ to be allocated from a temporary instance and then 'filled' element by element.
 
 The final change is to refactor the factory method that instantiates the Vulkan library:
 
@@ -1228,7 +1230,7 @@ In the Vulkan `create` method a handler can now be configured that validates all
 
 ```java
 Consumer<Object> check = code -> {
-    if((code instanceof VkResult result) && (result != VkResult.SUCCESS)) {
+    if((code instanceof VkResult result) && (result != VkResult.VK_SUCCESS)) {
         throw new VulkanException(result);
     }
 };
@@ -1258,7 +1260,7 @@ After the text editor fiddling mentioned above the instance descriptor now looks
 
 ```java
 public class VkInstanceCreateInfo implements NativeStructure {
-    public final VkStructureType sType = VkStructureType.INSTANCE_CREATE_INFO;
+    public VkStructureType sType = VkStructureType.INSTANCE_CREATE_INFO;
     public Handle pNext;
     public int flags;
     public VkApplicationInfo pApplicationInfo;
@@ -1510,11 +1512,9 @@ Instance instance = new Instance.Builder()
 
 ### Handler Library
 
-Refactoring the diagnostic handler presents a few new challenges:
+Refactoring the diagnostic handler presents a couple of new challenges:
 
 * The native methods to create and destroy a handler must be created programatically, since the address is a _function pointer_ instead of a symbol looked up from the native library.
-
-* In particular the method signatures are not defined in the Vulkan API but must be derived from the documentation.
 
 * A handler requires an FFM callback _stub_ to allow Vulkan to report diagnostic messages to the application.
 
@@ -1526,7 +1526,7 @@ The majority of the existing handler code remains as-is except for:
 
 * Unmarshalling of the diagnostic report structure to construct the `Message` record.
 
-Although the diagnostic handler uses a different mechanism to lookup the memory address of its methods, the existing framework can be reused by the introduction of the following hand-crafted  library:
+Although the diagnostic handler uses a different mechanism to lookup the memory address of its methods, the existing framework can be reused by the introduction of the following hand-crafted library:
 
 ```java
 private interface HandlerLibrary {
@@ -1606,10 +1606,14 @@ private record MessageCallback(Consumer<Message> consumer, Transformer<NativeStr
 }
 ```
 
-Note that again the signature of the callback must be hard-coded based on the documentation:
+Which corresponds to the signature of the callback defined in the Vulkan header:
 
 ```java
-public boolean message(int severity, int typeMask, MemorySegment pCallbackData, MemorySegment pUserData)
+typedef VkBool32 (VKAPI_PTR *PFN_vkDebugUtilsMessengerCallbackEXT)(
+	VkDebugUtilsMessageSeverityFlagBitsEXT           messageSeverity,
+	VkDebugUtilsMessageTypeFlagsEXT                  messageTypes,
+	const VkDebugUtilsMessengerCallbackDataEXT*      pCallbackData,
+	void*                                            pUserData);
 ```
 
 The resultant method handle is then bound to the callback _instance_ in order to delegate diagnostic reports to the relevant handler:
@@ -1618,7 +1622,7 @@ The resultant method handle is then bound to the callback _instance_ in order to
 MethodHandle binding = handle.bindTo(this);
 ```
 
-This handle is then linked to an up-call stub with a function descriptor matching the `message` method:
+This handle is then linked to an up-call stub with a function descriptor matching the callback signature:
 
 ```java
 private static MemorySegment link(MethodHandle handle) {
@@ -1633,14 +1637,14 @@ private static MemorySegment link(MethodHandle handle) {
 }
 ```
 
-Note that that linker uses the _global_ arena in this case, otherwise the upcall will fail.
+Note that that linker uses the _global_ arena in this case, otherwise the upcall fails.
 
 The `build` method of the handler is modified to lookup the transformer for the message structure:
 
 ```java
 public DiagnosticHandler build() {
     ...
-    var transformer = registry.get(VkDebugUtilsMessengerCallbackData.class);
+    var transformer = registry.get(VkDebugUtilsMessengerCallbackDataEXT.class);
     var callback = new MessageCallback(consumer, transformer);
     var info = populate(callback.address());
     ...
@@ -1668,10 +1672,12 @@ The last required change is to unmarshal the diagnostic report received by the `
 public boolean message(...) {
     long size = transformer.layout().byteSize();
     MemorySegment segment = pCallbackData.reinterpret(size);
-    var data = (VkDebugUtilsMessengerCallbackData) transformer.unmarshal(segment);
+    var data = (VkDebugUtilsMessengerCallbackDataEXT) transformer.unmarshal(segment);
     ...
 }
 ```
+
+TODO - requires fiddle for returned arrays
 
 In this case the off-heap memory needs to be explicitly resized to match the expected structure.
 
@@ -2150,9 +2156,11 @@ VkDeviceQueueCreateInfo - primitive arrays
 
 ## Conclusion
 
-At this point the FFM-based framework now fully supports most of the requirements for both GLFW and Vulkan, with the addition of some deferred edge cases covered in the next section.
+At this point the FFM-based framework now fully supports the bulk of the requirements for both GLFW and Vulkan, with the addition of some [miscellaneous](#miscellaneous) deferred or edge cases covered at the end of the chapter.
 
-The prototype is discarded and refactoring continues with the existing suite of demo application and refactoring of the code generator (in the next section).
+The prototype is discarded and refactoring continues with the existing suite of demo application.
+
+The last major chunk of work is refactoring of the code generator which is covered in the next section.
 
 ----
 
@@ -2219,11 +2227,11 @@ public record NativeType(String name, MemoryLayout layout)
 
 ### Overview
 
-The major change for the structure generator is the addition of the requirement to also generate the source code for the FFM memory layout.
+The major change to the structure generator is the addition of the requirement to also generate the source code for the FFM memory layout.
 
 This will entail:
 
-* Refactoring of the existing generator in terms of the revised type mapper.
+* Refactoring the existing generator in terms of the revised type mapper.
 
 * Generation of the memory layout from the mapped structure fields.
 
@@ -2289,9 +2297,9 @@ return Map.of(
 
 ### Alignment
 
-_Data alignment_ is the aligning of fields according to their _natural alignment_, meaning the memory location _must_ be some multiple of the _word_ size of the platform (8 bytes by default).  See [Wikipedia](https://en.wikipedia.org/wiki/Data_structure_alignment).
+_Data alignment_ is the aligning of fields according to their _natural alignment_, meaning the memory location __must__ be some multiple of the _word_ size of the platform (8 bytes by default).  See [Wikipedia](https://en.wikipedia.org/wiki/Data_structure_alignment).
 
-The natural alignment for each data type can be summarised as some multiple of the word size as follows (for an 8-byte word):
+The natural alignment for each data type can be summarised as follows:
 
 * bytes - none.
 
@@ -2376,23 +2384,21 @@ GroupLayout group = builder.layout(structure.name(), structure.group(), fields);
 The builder iterates through the structure and determines the memory layout of each field, injecting padding as required:
 
 ```java
-class LayoutBuilder {
-	public GroupLayout layout(String name, GroupType type, List<StructureField<NativeType>> fields) {
-		// Build field layouts and inject alignment padding as required
-		MemoryLayout[] layouts = fields
-			.stream()
-			.map(LayoutBuilder::layout)
-			.gather(padding())
-			.toArray(MemoryLayout[]::new);
+public GroupLayout layout(String name, GroupType type, List<StructureField<NativeType>> fields) {
+	// Build field layouts and inject alignment padding as required
+	MemoryLayout[] layouts = fields
+		.stream()
+		.map(LayoutBuilder::layout)
+		.gather(padding())
+		.toArray(MemoryLayout[]::new);
 
-		// Build group layout
-		GroupLayout group = switch(type) {
-			case STRUCT -> MemoryLayout.structLayout(layouts);
-			case UNION	-> MemoryLayout.unionLayout(layouts);
-		};
+	// Build group layout
+	GroupLayout group = switch(type) {
+		case STRUCT -> MemoryLayout.structLayout(layouts);
+		case UNION	-> MemoryLayout.unionLayout(layouts);
+	};
 
-		return group;
-	}
+	return group;
 }
 ```
 
@@ -2436,7 +2442,7 @@ The `inject` method is an _integrator_ that applies the alignment logic for each
 ```java
 private static boolean inject(FieldAlignment alignment, MemoryLayout layout, Downstream<? super MemoryLayout> downstream) {
 	// Inject padding as required
-	long padding = alignment.align(layout);
+	long padding = alignment.padding(layout);
 	add(padding, downstream);
 
 	// Append field layout
@@ -2467,7 +2473,7 @@ private static void append(FieldAlignment alignment, Downstream<? super MemoryLa
 
 ### Layout Writer
 
-A second new component generates the source code for the structure layout:
+A second new component builds the source code for the generated structure layout:
 
 ```java
 var writer = new LayoutWriter();
@@ -2546,7 +2552,7 @@ Finally the resultant source code is wrapped depending on whether the layout is 
 
 ```java
 String type = switch(group) {
-	case StructLayout _ -> "structLayout";
+	case StructLayout _	-> "structLayout";
 	case UnionLayout _	-> "unionLayout";
 };
 return String.format("MemoryLayout.%s(%s)", type, fields);
@@ -2560,7 +2566,7 @@ A couple of features have been omitted for brevity:
 
 ### Template
 
-The generated arguments and layout are injected into the Velocity template to generate the source code.
+The generated arguments and layout are injected into the Velocity template as previously to generate the source code.
 
 The template itself is now much simpler:
 
@@ -2592,20 +2598,51 @@ public class $name implements NativeStructure {
 }
 ```
 
-The following example native structure illustrates several of the 
+The following example structure illustrates several of the mapping cases:
 
-- Enumerations: the `sType` and `sharingMode` fields.
-
-- Pointers to `void*`
-
-TODO
-
-```C
+```c
+typedef struct VkBufferCreateInfo {
+    VkStructureType        sType;
+    const void*            pNext;
+    VkBufferCreateFlags    flags;
+    VkDeviceSize           size;
+    VkBufferUsageFlags     usage;
+    VkSharingMode          sharingMode;
+    uint32_t               queueFamilyIndexCount;
+    const uint32_t*        pQueueFamilyIndices;
+} VkBufferCreateInfo;
 ```
 
 The generated source code (excluding imports and comments) for this structure is:
 
 ```java
+public class VkBufferCreateInfo implements NativeStructure {
+	public VkStructureType sType;
+	public Handle pNext;
+	public EnumMask<VkBufferCreateFlags> flags;
+	public long size;
+	public EnumMask<VkBufferUsageFlags> usage;
+	public VkSharingMode sharingMode;
+	public int queueFamilyIndexCount;
+	public int[] pQueueFamilyIndices;
+
+	@Override
+	public GroupLayout layout() {
+		return MemoryLayout.structLayout(
+			JAVA_INT.withName("sType"),
+			PADDING,
+			POINTER.withName("pNext"),
+			JAVA_INT.withName("flags"),
+			PADDING,
+			JAVA_LONG.withName("size"),
+			JAVA_INT.withName("usage"),
+			JAVA_INT.withName("sharingMode"),
+			JAVA_INT.withName("queueFamilyIndexCount"),
+			PADDING,
+			POINTER.withName("pQueueFamilyIndices")
+		);
+	}
+}
 ```
 
 ## Enumerations
@@ -2614,9 +2651,35 @@ The enumeration generator is largely unaffected by the Panama refactor, however 
 
 A handy feature of the existing code was automatic generation of the `sType` field for top-level structures, leveraging the consistent naming convention in the `VkStructureType` enumeration.  However in more recent iterations of the Vulkan API there are several structures that deviate from this convention, or in some cases do not have an entry in the enumeration.  Therefore unfortunately this logic is removed and the field is populated programatically throughout.
 
-Previously many of the enumerations contained a number of _synthetic_ constants that were omitted by the generator to reduce the number of constants.  However more recent iterations of the API only seem to contain `MAX_ENUM` so this is less of a problem.  Also several of the enumerations would be empty other than this synthetic entry, so this logic is largely redundant and is therefore removed.
+Previously many of the enumerations contained a number of _synthetic_ constants that were omitted by the generator to reduce code size.  However more recent iterations of the API only seem to contain `MAX_ENUM` so this is less of a problem.  Also several of the enumerations would be empty other than this synthetic entry, so this logic is largely redundant and is therefore removed.
 
 Finally, the generator truncates the constant names to remove the classname prefix.  This results in an edge case where the resultant name may have a leading numeric, which is obviously not a valid Java identifier.  The logic for this case is modified to 'walk' back one word in the truncated name, which is simpler than the previous behaviour that attempted to 'translate' the numeric.
+
+## File Printer
+
+```java
+interface FilePrinter {
+	/**
+	 * Writes a generated source file.
+	 * @param name		Filename
+	 * @param source	Source code
+	 */
+	void print(String name, String source);
+
+	/**
+	 * Silent implementation.
+	 */
+	FilePrinter IGNORE = new FilePrinter() {
+		@Override
+		public void print(String name, String source) {
+			// Ignored
+		}
+	};
+}
+```
+
+TODO - default, comparison
+
 
 ---
 
@@ -2673,7 +2736,7 @@ This allows `boolean` values to be correctly identified as such in structures wh
 
 The `glfwGetRequiredInstanceExtensions` API method returns an array of strings where the length is populated as a by-reference side-effect:
 
-```C
+```c
 GLFWAPI const char** glfwGetRequiredInstanceExtensions(uint32_t* count);
 ```
 

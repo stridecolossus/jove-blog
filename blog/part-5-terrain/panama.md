@@ -2168,12 +2168,13 @@ The last major chunk of work is refactoring of the code generator which is cover
 
 ## Background
 
-not into detail since
-refactor previous iteration based on JNA
-parser -> metadata remains roughly same
-possibly replace with proper grammar / AST approach, e.g. ANTLR
+The main change to the code generator is the addition of the requirement to also build the source code for the FFM memory layout.  Other than some minor refactoring the previous iteration based on JNA is largely unaffected.
 
-major change is introduction of generation of the FFM memory layout for structures
+/////
+
+TODO - move to previous chapter?
+
+possibly replace with proper grammar / AST approach, e.g. ANTLR
 
 issues faced, ambiguities:
 
@@ -2193,51 +2194,11 @@ ambiguous / weird mappings
 e.g. shader pCode is a uint32_t* but is SPIV bytes WTF!
 but pQueueFamilyIndices is a pointer to an int[]
 
-## Type Mapping
+/////
 
-To support the changes for structure generation, the existing type mapper is completely overhauled
+Generating the memory layout of a structure entails generating the memory layout of each field, and some logic to correctly align data within memory.
 
-TODO ~ tidy up the code!!!
-
-use cases
-
-primitives
-standard C types, e.g. uint32_t
-char*
-char**
-void*
-VkBool32 special case (again)
-pointers ~ plurality -> handle or array, ropey but works (just)
-enumerations/masks - nasty
-char[] -> String
-
-summarise in table again? simpler than the code!!!
-
-
-
-```java
-record StructureField<T>(String name, T type, int length)
-```
-
-```java
-public record NativeType(String name, MemoryLayout layout)
-```
-
-## Structure Generator
-
-### Overview
-
-The major change to the structure generator is the addition of the requirement to also generate the source code for the FFM memory layout.
-
-This will entail:
-
-* Refactoring the existing generator in terms of the revised type mapper.
-
-* Generation of the memory layout from the mapped structure fields.
-
-* Additional logic to correctly align data within memory.
-
-The design for generation of the memory layout splits the process into two steps:
+The design for generation of the field layouts splits the process into two steps:
 
 1. Generate an actual FFM memory layout from the structure fields.
 
@@ -2245,57 +2206,7 @@ The design for generation of the memory layout splits the process into two steps
 
 While this may seem a little backwards (and the process could easily be done in one transformation), generating an FFM layout will leverage the built-in validation for possible bugs such as invalid field or structure alignment, bad layouts, etc.  The resultant code should also be more coherent and easier to unit-test.
 
-### Refactor
-
-First the domain type of each field is determined from the type mapper:
-
-```java
-List<StructureField<NativeType>> fields = structure
-	.fields()
-	.stream()
-	.map(this::map)
-	.toList();
-```
-
-Where `map` TODO
-
-```java
-private StructureField<NativeType> map(StructureField<String> field) {
-	TODO
-}
-```
-
-The template arguments are now derived from the mapped fields:
-
-```java
-Map<String, Object> arguments = fields
-	.stream()
-	.map(StructureGenerator::arguments)
-	.toList();
-```
-
-Which delegates to the following helper:
-
-```java
-private static Map<String, Object> arguments(StructureField<NativeType> field) {
-	return Map.of(
-		"name",	field.name(),
-		"type",	field.type().name()
-	);
-}
-```
-
-And the final set of arguments is constructed, with the addition of the new `layout` argument (implemented below):
-
-```java
-return Map.of(
-	"name",		structure.name(),
-	"fields",	arguments,
-	"layout",	layout
-);
-```
-
-### Alignment
+## Alignment
 
 _Data alignment_ is the aligning of fields according to their _natural alignment_, meaning the memory location __must__ be some multiple of the _word_ size of the platform (8 bytes by default).  See [Wikipedia](https://en.wikipedia.org/wiki/Data_structure_alignment).
 
@@ -2309,7 +2220,7 @@ The natural alignment for each data type can be summarised as follows:
 
 * long / address - beginning of a word boundary.
 
-This may require the injection of _padding_:
+This may require the injection of _padding_ bytes:
 
 1. _between_ the fields of a structure.
 
@@ -2372,7 +2283,7 @@ public long padding() {
 }
 ```
 
-### Layout Builder
+## Layout Builder
 
 A new component builds the FFM memory layout for a given structure:
 
@@ -2395,7 +2306,7 @@ public GroupLayout layout(String name, GroupType type, List<StructureField<Nativ
 	// Build group layout
 	GroupLayout group = switch(type) {
 		case STRUCT -> MemoryLayout.structLayout(layouts);
-		case UNION	-> MemoryLayout.unionLayout(layouts);
+		case UNION  -> MemoryLayout.unionLayout(layouts);
 	};
 
 	return group;
@@ -2471,7 +2382,7 @@ private static void append(FieldAlignment alignment, Downstream<? super MemoryLa
 }
 ```
 
-### Layout Writer
+## Layout Writer
 
 A second new component builds the source code for the generated structure layout:
 
@@ -2508,11 +2419,11 @@ The writer switches over the sealed type to recursively generate the source code
 ```java
 protected String write(MemoryLayout layout) {
 	return switch(layout) {
-		case AddressLayout _			-> "POINTER";
-		case ValueLayout value			-> write(value);
-		case SequenceLayout sequence	-> write(sequence);
-		case GroupLayout group			-> write(group);
-		case PaddingLayout padding		-> write(padding);
+		case AddressLayout _            -> "POINTER";
+		case ValueLayout value          -> write(value);
+		case SequenceLayout sequence    -> write(sequence);
+		case GroupLayout group          -> write(group);
+		case PaddingLayout padding      -> write(padding);
 	};
 }
 ```
@@ -2564,7 +2475,7 @@ A couple of features have been omitted for brevity:
 
 * Structure layouts with a single field are inlined.
 
-### Template
+## Template
 
 The generated arguments and layout are injected into the Velocity template as previously to generate the source code.
 
@@ -2655,7 +2566,11 @@ Previously many of the enumerations contained a number of _synthetic_ constants 
 
 Finally, the generator truncates the constant names to remove the classname prefix.  This results in an edge case where the resultant name may have a leading numeric, which is obviously not a valid Java identifier.  The logic for this case is modified to 'walk' back one word in the truncated name, which is simpler than the previous behaviour that attempted to 'translate' the numeric.
 
-## File Printer
+## Integration
+
+file printer - ignore, print, file, compare
+one or all, filters, etc
+a couple of structures skipped
 
 ```java
 interface FilePrinter {
@@ -2680,14 +2595,11 @@ interface FilePrinter {
 
 TODO - default, comparison
 
-
 ---
 
 # Miscellaneous
 
-## Overview
-
-This section covers the implementation of various edge-cases or features that were previously deferred.
+This section covers the implementation of various isolated edge-cases or features that were previously deferred.
 
 ## Native Booleans
 
@@ -2777,9 +2689,103 @@ public List<String> extensions() {
 }
 ```
 
-## Desktop Callbacks
+## Callbacks
 
-TODO
+To support callbacks _from_ the native layer (largely for GLFW input devices) the following new JOVE type and companion transformer are introduced:
+
+```java
+public interface Callback {
+	class CallbackTransformerFactory implements Registry.Factory<Callback> {
+		private final Linker linker = Linker.nativeLinker();
+		private final Registry registry;
+	}
+}
+```
+
+The transformer builds the _upcall stub_ for a given callback on demand:
+
+```java
+public Transformer<Callback, MemorySegment> transformer(Class<? extends Callback> type) {
+	return new Transformer<>() {
+		private final Method method = method(type);
+
+		public MemorySegment marshal(Callback callback, SegmentAllocator allocator) {
+			return upcall(method, callback);
+		}
+	};
+}
+```
+
+The `Callback` interface itself cannot be declared a `@FunctionalInterface`, therefore the following code validates that a given callback declares a _single_ method:
+
+```java
+private static Method method(Class<? extends Callback> callback) {
+	Method[] methods = callback.getDeclaredMethods();
+	if(methods.length != 1) {
+		throw new IllegalArgumentException(...);
+	}
+	return methods[0];
+}
+```
+
+A method handle is reflected from the callback instance:
+
+```java
+MethodHandle handle = MethodHandles
+	.lookup()
+	.unreflect(method)
+	.bindTo(instance);
+```
+
+Which is then linked to the native library:
+
+```java
+return linker.upcallStub(handle, descriptor, Arena.global());
+```
+
+Notes:
+
+* The stub is created using the global arena, otherwise the linker will fail.
+
+* Callback stubs are generated on demand in each invocation of the `marshal` method.  This does not feel right but there is not really any  other way to interpret the FFM upcall API.
+
+For the moment callbacks are restricted to primitives and `MemorySegment` parameters.  Further analysis and design is required to determine how best to support domain types such as structures.  This might look like a bit of a cop out, but in any case GLFW only requires primitive parameters (except for the window handle which is ignored anyway).  The only other callback is the diagnostic handler which is treated as a special case for now.
+
+The following snippet of the device library illustrates a callback in action:
+
+```java
+interface DeviceLibrary {
+	@FunctionalInterface
+	interface MouseListener extends Callback {
+		void event(MemorySegment window, double x, double y);
+	}
+
+	void glfwSetCursorPosCallback(Window window, MouseListener listener);
+
+	void glfwSetScrollCallback(Window window, MouseListener listener);
+}
+```
+
+Which slots transparently into the existing device and event handling framework:
+
+```java
+public class MousePointer extends AbstractWindowDevice<ScreenCoordinate, MouseListener> {
+	protected MouseListener callback(Window window, Consumer<ScreenCoordinate> listener) {
+		return new MouseListener() {
+			public void event(MemorySegment window, double x, double y) {
+				var pos = new ScreenCoordinate((int) x, (int) y);
+				listener.accept(pos);
+			}
+		};
+	}
+
+	protected BiConsumer<Window, MouseListener> method(DeviceLibrary library) {
+		return library::glfwSetCursorPosCallback;
+	}
+}
+```
+
+Finally the callback instance is now encapsulated in the device base-class, ensuring it is not garbage-collected until the listener is _explicitly_ removed by the application.  Therefore the weak map of callbacks in the window class is redundant and can be removed, simplifying the code and reducing inter-dependencies.
 
 ----
  

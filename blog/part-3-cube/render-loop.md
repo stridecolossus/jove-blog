@@ -168,7 +168,7 @@ Notes:
 Next a new task is implemented that composes the various collaborating Vulkan components used during rendering of a frame:
 
 ```java
-public class VulkanRenderTask {
+public class RenderTask {
     private final List<FrameBuffer> buffers;
     private final FrameComposer composer;
     private final Swapchain swapchain;
@@ -277,8 +277,8 @@ The render task:
 
 ```java
 @Bean
-VulkanRenderTask render(FrameBuffer.Group group, FrameComposer composer, Swapchain swapchain) {
-    return new VulkanRenderTask(group.buffers(), composer, swapchain);
+RenderTask render(FrameBuffer.Group group, FrameComposer composer, Swapchain swapchain) {
+    return new RenderTask(group.buffers(), composer, swapchain);
 }
 ```
 
@@ -286,7 +286,7 @@ And finally the render loop:
 
 ```java
 @Bean
-public RenderLoop loop(VulkanRenderTask task, Collection<Frame.Listener> listeners) {
+public RenderLoop loop(RenderTask task, Collection<Frame.Listener> listeners) {
     var loop = new RenderLoop();
     loop.rate(60);
     loop.start(task::render);
@@ -696,10 +696,10 @@ public boolean signalled() {
 A fence is created in the constructor of the render task:
 
 ```java
-public class VulkanRenderTask {
+public class RenderTask {
     private final Fence fence;
 
-    public VulkanRenderTask(DeviceContext dev) {
+    public RenderTask(DeviceContext dev) {
         this.fence = Fence.create(dev, VkFenceCreateFlag.SIGNALED);
     }
 }
@@ -860,7 +860,7 @@ The new render loop is still not fully utilising the pipeline since the renderin
 First the existing render task is 'inverted' by factoring out the acquire and presentation logic into a separate object that tracks the state of an in-flight frame:
 
 ```java
-public class VulkanFrame implements TransientObject {
+public class FrameState implements TransientObject {
     private final Semaphore available, ready;
     private final Fence fence;
 }
@@ -883,7 +883,7 @@ public int acquire(Swapchain swapchain) {
 }
 ```
 
-Note that the fence is only reset _after_ the acquire step which may fail with a `SwapchainInvalidated` exception, preventing a potential deadlock scenario.
+Note that the fence is only reset _after_ the acquire step which may fail with an `Invalidated` exception, preventing a potential deadlock scenario.
 
 The presentation step is factored out similarly:
 
@@ -901,53 +901,69 @@ public void present(Command.Buffer render, int index, Swapchain swapchain) {
 }
 ```
 
-The render task now comprises an _array_ of in-flight frames:
+The render task now comprises an _array_ of in-flight frames managed by a new internal iterator:
 
 ```java
-public class VulkanRenderTask implements TransientObject {
-    private final VulkanFrame[] frames;
-    private int next;
+private static class FrameStateIterator {
+	private final List<FrameState> frames;
+	private int index = -1;
 
-    @Override
-    public void destroy() {
-        for(var frame : frames) {
-            frame.destroy();
-        }
-    }
+	public void destroy() {
+		for(FrameState f : frames) {
+			f.destroy();
+		}
+	}
 }
 ```
 
-And the render logic is modified to cycle through the frames on each iteration:
+The in-flight frame instances are created in the constructor
+
+```java
+public FrameStateIterator(Swapchain swapchain) {
+	int number = requireOneOrMore(swapchain.frames());
+	LogicalDevice device = swapchain.device();
+
+	this.frames = IntStream
+		.range(0, number)
+		.mapToObj(_ -> FrameState.create(device))
+		.toList();
+	}
+}
+```
+
+Note that the number of in-flight frames is specified by the new `frames` accessor on the swapchain, which by default is the same as the number of colour attachments.
+
+The in-flight frames are cycled on each iteration:
+
+```java
+public synchronized FrameState next() {
+	if(++index == frames.size()) {
+		index = 0;
+	}
+	return frames.get(index);
+}
+```
+
+And finally the render task is modified accordingly:
 
 ```java
 public void render() {
     // Select next frame
-    VulkanFrame frame = frames[next];
+    FrameState frame = iterator.next();
 
     // Acquire next frame buffer
     int index = frame.acquire(swapchain);
-    FrameBuffer fb = buffers.get(index);
+    Framebuffer framebuffer = buffers.get(index);
 
     // Compose render task
-    Command.Buffer render = composer.compose(next, fb);
+    Command.Buffer render = composer.compose(iterator.index, framebuffer);
 
     // Present rendered frame
     frame.present(render);
-
-    // Move to next frame
-    if(++next >= frames.length) {
-        next = 0;
-    }
 }
 ```
 
 Multiple in-flight frames can now be executed in parallel, the introduced synchronisation better utilises the pipeline, and the overall rendering work is bounded.
-
-Notes:
-
-* The number of in-flight frames does not necessarily have to be the same as the number of swapchains images (though in practice this is generally the case).
-
-* The render task is now a transient object and releases the synchronisation primitives for each frame on destruction.
 
 ---
 

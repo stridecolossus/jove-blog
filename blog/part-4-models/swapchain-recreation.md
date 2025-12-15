@@ -282,7 +282,7 @@ private Swapchain build() {
 
 This separates the concerns of the various collaborators that contribute to configuration of the swapchain:
 
-* the process of recreating the swapchain is factored out to the new factory component.
+* the process of recreating the swapchain is factored out to the new manager.
 
 * the swapchain and builder are now considerably simpler (and easier to test).
 
@@ -294,7 +294,7 @@ The following sections cover implementation of the various swapchain configurati
 
 ### Presentation Mode
 
-The presentation mode is selected from a prioritised list of candidates, filtered by those supported by the surface, falling back to a default value as appropriate.  The selected mode is the then applied to the swapchain builder:
+The presentation mode is selected from a prioritised list of candidates, filtered by those supported by the surface, falling back to a default value as appropriate.  The selected mode is then applied to the swapchain builder:
 
 ```java
 public class PresentationModeSwapchainConfiguration implements SwapchainConfiguration {
@@ -340,7 +340,7 @@ public T select(List<T> candidates) {
 }
 ```
 
-The presentation mode can now be selected and appled using the new utility:
+The presentation mode can now be selected and applied using the new utility:
 
 ```java
 public void configure(Swapchain.Builder builder, Properties properties) {
@@ -555,11 +555,11 @@ public void build(Swapchain swapchain) {
 }
 ```
 
-Delegating to the following code to rebuild a number of framebuffers specified by the `count` of the swapchain:
+Delegating to the following code to rebuild a framebuffer for each colour attachment of the swapchain:
 
 ```java
 private void create(Swapchain swapchain) {
-	int count = swapchain.count();
+	int count = swapchain.attachments();
 	Dimensions extents = swapchain.extents();
 	for(int n = 0; n < count; ++n) {
 		List<View> views = views(n);
@@ -581,7 +581,7 @@ private List<View> views(int index) {
 }
 ```
 
-Note that the `view` method of a colour attachment returns the swapchain image for the given framebuffer index, whereas the depth-stencil attachment returns a _single_ view (i.e. the index is irrelevant).
+Note that the `view` method of a colour attachment returns the swapchain image for the given framebuffer index, whereas the depth-stencil attachment returns a _single_ view shared across frames and the index is irrelevant.
 
 ---
 
@@ -627,10 +627,10 @@ SwapchainConfiguration[] configuration = {
 };
 ```
 
-The new factory composes the swapchain configuration and the surface properties:
+The new manager composes the swapchain configuration and the surface properties:
 
 ```java
-var factory = new SwapchainManager(device, properties, builder, List.of(configuration));
+var manager = new SwapchainManager(device, properties, builder, List.of(configuration));
 ```
 
 And finally the render task checks for an invalidated swapchain:
@@ -653,7 +653,7 @@ public class RenderTask implements Runnable, TransientObject {
 }
 ```
 
-And recreates the swapchain and framebuffers as required:
+Recreating the swapchain and framebuffers as required:
 
 ```java
 private void recreate() {

@@ -501,14 +501,14 @@ public interface Mesh {
     Primitive primitive();
 
     /**
+     * @return Vertex layout
+     */
+    List<Layout> layout();
+    
+    /**
      * @return Draw count
      */
     int count();
-
-    /**
-     * @return Vertex layout
-     */
-    CompoundLayout layout();
 }
 ```
 
@@ -541,14 +541,12 @@ public enum Primitive {
 A mesh is constructed by the following mutable implementation:
 
 ```java
-public class DefaultMesh extends AbstractMesh {
+public class MutableMesh extends AbstractMesh {
+	private final Primitive primitive;
+	private final List<Layout> layout;
     private final List<Vertex> vertices = new ArrayList<>();
 
-    public DefaultMesh(Primitive primitive, CompoundLayout layout) {
-        super(primitive, layout);
-    }
-
-    public DefaultMesh add(Vertex vertex) {
+    public MutableMesh add(Vertex vertex) {
         vertices.add(vertex);
         return this;
     }
@@ -558,17 +556,17 @@ public class DefaultMesh extends AbstractMesh {
 The interleaved vertex buffer is generated from the mutable model in the same manner as the hard-coded quad previously:
 
 ```java
-public ByteSizedBufferable vertices() {
-    return new ByteSizedBufferable() {
+public MeshData vertices() {
+    return new MeshData() {
         @Override
         public int length() {
             return layout.stride() * vertices.size();
         }
 
         @Override
-        public void buffer(ByteBuffer bb) {
+        public void buffer(ByteBuffer buffer) {
             for(Bufferable b : vertices) {
-                b.buffer(bb);
+                b.buffer(buffer);
             }
         }
     };
@@ -584,7 +582,7 @@ public class CubeBuilder {
     private float size = MathsUtil.HALF;
     
     public Mesh build() {
-        DefaultMesh mesh = new DefaultMesh(Primitive.TRIANGLE, new CompoundLayout(Point.LAYOUT, Coordinate2D.LAYOUT));
+        var mesh = new MutableMesh(Primitive.TRIANGLE, new CompoundLayout(Point.LAYOUT, Coordinate2D.LAYOUT));
         ...
         return mesh;
     }
@@ -660,7 +658,7 @@ for(int face = 0; face < FACES.length; ++face) {
 Finally each vertex is added to the cube:
 
 ```java
-Vertex vertex = new DefaultVertex(pos, coord);
+Vertex vertex = new Vertex(pos, coord);
 model.add(vertex);
 ```
 

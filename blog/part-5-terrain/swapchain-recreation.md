@@ -16,7 +16,7 @@ title: Swapchain Recreation
 
 # Introduction
 
-The `acquire` and `present` methods of the swapchain return an error code if it has been invalidated, generally when the window has been resized or minimised.  These methods will be refactored to handle _multiple_ result codes and determine the appropriate response.
+The `acquire` and `present` methods of the swapchain return _multiple_ result codes if it has become invalid, generally when the window has been resized or minimised.  These methods will be refactored to determine the appropriate response.
 
 A swapchain that has become invalid will be indicated by a new exception, which can then be trapped to recreate the swapchain (and framebuffers) as required.
 
@@ -26,9 +26,7 @@ However the current implementation has several problems that should also be addr
 
 2. The rendering surface is a plain `Handle` until it is composed with the physical device.  However this handle is not used elsewhere and should be encapsulated into the surface component.
 
-TODO - this makes no sense...
-
-3. The surface handle is derived from the GLFW window and the Vulkan instance, however the surface _properties_ are also dependant on the selected physical device.  This makes the existing surface class overly complex and hard to test.
+3. The surface _properties_ are also dependant on the physical device making the existing class overly complex and hard to test.
 
 The swapchain and surface will therefore be (hopefully) simplified and the logic to configure and recreate the swapchain will be factored out to new discrete components.
 
@@ -225,12 +223,12 @@ This ensures that all swapchain properties are initialised to valid values _befo
 
 # Recreation
 
-## Swapchain Factory
+## Swapchain Manager
 
 The final piece of the jigsaw is a new component that is responsible for creating the swapchain on demand:
 
 ```java
-public class SwapchainFactory implements TransientObject {
+public class SwapchainManager implements TransientObject {
     private final LogicalDevice device;
     private final Properties properties;
     private final Builder builder;
@@ -255,7 +253,7 @@ public interface SwapchainConfiguration {
 The swapchain is first instantiated in the constructor:
 
 ```java
-public SwapchainFactory(...) {
+public SwapchainManager(...) {
     ...
     this.swapchain = build();
 }
@@ -296,48 +294,83 @@ The following sections cover implementation of the various swapchain configurati
 
 ### Presentation Mode
 
-The presentation mode is selected from a prioritised list of candidates, filtered by those supported by the surface:
+The presentation mode is selected from a prioritised list of candidates, filtered by those supported by the surface, falling back to a default value as appropriate.  The selected mode is the then applied to the swapchain builder:
 
 ```java
 public class PresentationModeSwapchainConfiguration implements SwapchainConfiguration {
-    private final List<VkPresentModeKHR> modes;
+	private final List<VkPresentModeKHR> modes;
 
-    public void configure(Swapchain.Builder builder, Properties properties) {
-        VkPresentModeKHR selected = properties
-            .modes()
-            .stream()
-            .filter(modes::contains)
-            .findAny()
-            .orElse(Swapchain.DEFAULT_PRESENTATION_MODE);
-
-        builder.presentation(selected);
-    }
+	public void configure(Swapchain.Builder builder, Properties properties) {
+		List<VkPresentModeKHR> available = properties.modes();
+		...
+		builder.presentation(mode);
+	}
 }
 ```
 
-Note that if none of the candidates are available this logic falls back to the default mode (`FIFO_KHR` guaranteed on all platforms).
+Since there are several use-cases that repeat this pattern of selecting from a list with a fallback option, a new generic utility is introduced:
+
+```java
+public class PrioritySelector<T> {
+	private final Predicate<T> filter;
+	private final Function<List<T>, T> fallback;
+
+	public PrioritySelector(Predicate<T> filter, Function<List<T>, T> fallback) {
+		...
+	}
+
+	public PrioritySelector(Predicate<T> filter, T fallback) {
+		this(filter, _ -> fallback);
+	}
+}
+```
+
+The second constructor specifies a literal fallback value (ignoring the candidate list).
+
+The selection logic is then implemented as follows:
+
+```java
+public T select(List<T> candidates) {
+	return candidates
+		.stream()
+		.filter(filter)
+		.findAny()
+		.or(() -> Optional.ofNullable(fallback.apply(candidates)))
+		.orElseThrow();
+}
+```
+
+The presentation mode can now be selected and appled using the new utility:
+
+```java
+public void configure(Swapchain.Builder builder, Properties properties) {
+	List<VkPresentModeKHR> available = properties.modes();
+	var selector = new PrioritySelector<>(available::contains, Swapchain.DEFAULT_PRESENTATION_MODE);
+	VkPresentModeKHR mode = selector.select(modes);
+	builder.presentation(mode);
+}
+```
+
+Note that if none of the candidates are available the swapchain falls back to the default `FIFO_KHR` mode which is guaranteed on all platforms.
 
 ### Surface Format
 
-A preferred surface format is selected from those supported by the surface:
+Selecting the surface format of the swapchain also uses the new selector utility:
 
 ```java
 public class SurfaceFormatSwapchainConfiguration implements SwapchainConfiguration {
-    private final SurfaceFormatWrapper format;
+	private final SurfaceFormatWrapper format;
 
-    public void configure(Builder builder, Properties properties) {
-        final VkSurfaceFormatKHR selected = properties
-                .formats()
-                .stream()
-                .filter(format::equals)
-                .findAny()
-                .orElse(properties.formats().getFirst());
-
-        builder.format(selected);
-    }
+	public void configure(Builder builder, Properties properties) {
+		List<VkSurfaceFormatKHR> formats = properties.formats();
+		var selector = new PrioritySelector<VkSurfaceFormatKHR>(format::equals, first());
+		VkSurfaceFormatKHR selected = selector.select(formats);
+		builder.format(selected);
+	}
+}
 ```
 
-Where the following convenience wrapper compares the structure by equality:
+Where the following convenience wrapper compares the underlying structure by equality:
 
 ```java
 public static class SurfaceFormatWrapper extends VkSurfaceFormatKHR {
@@ -354,6 +387,22 @@ public static class SurfaceFormatWrapper extends VkSurfaceFormatKHR {
                 (this.colorSpace == that.colorSpace);
     }
 }
+```
+
+And `first` is a helper that selects the first candidate as the fallback:
+
+```java
+public static <T> Function<List<T>, T> first() {
+	return List::getFirst;
+}
+```
+
+As a bonus the selector utility can also be reused to choose the format for the depth-stencil attachment in the model demo:
+
+```java
+var filter = new FormatFilter(device::properties, true, Set.of(VkFormatFeatureFlags.DEPTH_STENCIL_ATTACHMENT));
+var selector = new PrioritySelector<>(filter, first());
+VkFormat format = selector.select(List.of(VkFormat.D32_SFLOAT, VkFormat.D32_SFLOAT_S8_UINT, VkFormat.D24_UNORM_S8_UINT));
 ```
 
 ### Image Count
@@ -480,6 +529,60 @@ int h = Math.clamp(size.height(), min.height, max.height);
 builder.extent(new Dimensions(w, h));
 ```
 
+## Framebuffers
+
+The framebuffers must also be recreated when the swapchain becomes invalid, therefore another new component (equivalent to the swapchain manager) is introduced to manage a set of framebuffers:
+
+```java
+public class Framebuffer extends VulkanObject {
+	public static class Factory implements TransientObject {
+		private final RenderPass pass;
+		private final List<Framebuffer> framebuffers = new ArrayList<>();
+	
+		public Framebuffer framebuffer(int index) {
+			return framebuffers.get(index);
+		}
+	}
+}
+```
+
+The framebuffers are recreated on demand:
+
+```java
+public void build(Swapchain swapchain) {
+	destroy();
+	create(swapchain);
+}
+```
+
+Delegating to the following code to rebuild a number of framebuffers specified by the `count` of the swapchain:
+
+```java
+private void create(Swapchain swapchain) {
+	int count = swapchain.count();
+	Dimensions extents = swapchain.extents();
+	for(int n = 0; n < count; ++n) {
+		List<View> views = views(n);
+		Framebuffer buffer = create(views, extents);
+		framebuffers.add(buffer);
+	}
+}
+```
+
+The view(s) for each attachment are aggregated by the following helper:
+
+```java
+private List<View> views(int index) {
+	return pass
+		.attachments()
+		.stream()
+		.map(attachment -> attachment.view(index))
+		.toList();
+}
+```
+
+Note that the `view` method of a colour attachment returns the swapchain image for the given framebuffer index, whereas the depth-stencil attachment returns a _single_ view (i.e. the index is irrelevant).
+
 ---
 
 # Integration
@@ -527,28 +630,46 @@ SwapchainConfiguration[] configuration = {
 The new factory composes the swapchain configuration and the surface properties:
 
 ```java
-var factory = new SwapchainFactory(device, properties, builder, List.of(configuration));
+var factory = new SwapchainManager(device, properties, builder, List.of(configuration));
 ```
 
-And finally the render task can recreate the swapchain and framebuffers as required:
+And finally the render task checks for an invalidated swapchain:
 
 ```java
 public class RenderTask implements Runnable, TransientObject {
+	private final SwapchainManager manager;
+	private final Framebuffer.Factory factory;
+	...
+
     @Override
     public void run() {
         try {
-            frame();
+            render();
         }
         catch(Swapchain.Invalidated e) {
-            device.waitIdle();
-            factory.recreate();
-            group.recreate(factory.swapchain());
+        	recreate();
         }
     }
 }
 ```
 
-Note that the task blocks until all pending rendering work has completed before recreating the swapchain.
+And recreates the swapchain and framebuffers as required:
+
+```java
+private void recreate() {
+	// Wait for pending rendering tasks
+	LogicalDevice device = manager.swapchain().device();
+	device.waitIdle();
+
+	// Recreate the swapchain
+	Swapchain swapchain = manager.recreate();
+
+	// Rebuild the framebuffers
+	factory.build(swapchain);
+}
+```
+
+Note that the task blocks until all pending rendering work has completed before recreating.
 
 ---
 
@@ -558,5 +679,5 @@ In this chapter the Vulkan surface, swapchain, and builder were refactored to bo
 
 In particular the logic to select various configuration properties was factored out to a suite of helper classes.
 
-The new `SwapchainFactory` recreates the swapchain when it is invalidated (indicated by a new custom exception), which is usually handled in the rendering task.
+The new `SwapchainManager` recreates the swapchain when it is invalidated (indicated by a new custom exception), which is usually handled in the rendering task.
 

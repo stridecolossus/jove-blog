@@ -9,6 +9,7 @@ title: Model Loader
 - [Overview](#overview)
 - [Model Loader](#model-loader)
 - [Indexed Models](#indexed-models)
+- [Summary](#summary)
 
 ---
 
@@ -42,12 +43,12 @@ The most common commands are:
 
 The slightly more complicated _face_ command specifies the vertices of a polygon as a tuple of indices delimited by the slash character:
 
-| example                   | polygon components					|
-| -------                   | ----------							|
-| f 1 2 3                   | vertex only							|
-| f 1/2 3/4 5/6             | vertex and texture coordinates		|
-| f 1//2 3//4 5//6          | vertex and normal						|
-| f 1/2/3 4/5/6 7/8/9       | vertex, normal texture coordinates	|
+| example                   | polygon components						|
+| -------                   | ------------------						|
+| f 1 2 3                   | vertex only								|
+| f 1/2 3/4 5/6             | vertex and texture coordinates			|
+| f 1//2 3//4 5//6          | vertex and normal							|
+| f 1/2/3 4/5/6 7/8/9       | vertex, normal and texture coordinates	|
 
 Note that component indices start at __one__ and can be negative to index from the end of the list.
 
@@ -130,8 +131,8 @@ The class outline for the loader comprises the transient data model and OBJ comm
 ```java
 public class ObjectModelLoader {
 	private final Pattern tokenize = Pattern.compile("\\s+");
-    private final Map<String, Parser> parsers = new HashMap<>();
-    private final ObjectModel model = new ObjectModel();
+	private final Map<String, Parser> parsers = new HashMap<>();
+	private final ObjectModel model = new ObjectModel();
 }
 ```
 
@@ -142,11 +143,11 @@ public List<IndexedMesh> load(Reader input) throws IOException {
 	var reader = new LineNumberReader(input);
 	try(reader) {
 		reader
-				.lines()
-				.map(ObjectModelLoader::clean)
-				.map(String::trim)
-				.filter(Predicate.not(String::isEmpty))
-				.forEach(this::parse);
+			.lines()
+			.map(ObjectModelLoader::clean)
+			.map(String::trim)
+			.filter(Predicate.not(String::isEmpty))
+			.forEach(this::parse);
 	}
 	catch(RuntimeException e) {
 		...
@@ -357,7 +358,7 @@ The OBJ builder constructs the JOVE model(s) from the transient data:
 
 ```java
 public class ObjectModel {
-    ...
+	...
 	private final List<Mesh> meshes = new ArrayList<>();
 	private Mesh current;
 }
@@ -441,9 +442,9 @@ public class IndexedMesh extends MutableMesh {
         return this;
     }
     
-    public Optional<Index> index() {
+	public Optional<Index> index() {
 		return Optional.of(new DefaultIndex());
-	}    
+	}
 }
 ```
 
@@ -451,17 +452,15 @@ The index buffer is generated in a similar fashion to the vertex buffer:
 
 ```java
 private static class DefaultIndex implements MeshData {
-    @Override
-    public int length() {
-        return indices.size() * Integer.BYTES;
-    }
+	public int length() {
+		return indices.size() * Integer.BYTES;
+	}
 
-    @Override
-    public void buffer(ByteBuffer buffer) {
+	public void buffer(ByteBuffer buffer) {
 		for(int n : indices) {
 			buffer.putInt(n);
 		}
-    }
+	}
 }
 ```
 
@@ -469,7 +468,7 @@ For the OBJ model a second specialisation performs vertex de-duplication:
 
 ```java
 class RemoveDuplicateMesh extends IndexedMesh {
-    private final Map<Vertex, Integer> map = new HashMap<>();
+	private final Map<Vertex, Integer> map = new HashMap<>();
 }
 ```
 
@@ -646,10 +645,10 @@ writeBuffer(mesh.vertices(), out);
 Which uses the following helper to output the length of the data followed by the buffer as a byte-array:
 
 ```java
-private static void writeBuffer(ByteSizedBufferable obj, DataOutputStream out) throws IOException {
+private static void writeBuffer(MeshData obj, DataOutputStream out) throws IOException {
     // Output length
-    int len = obj.length();
-    out.writeInt(len);
+    int length = obj.length();
+    out.writeInt(length);
 
     // Stop if empty buffer
     if(len == 0) {
@@ -657,9 +656,9 @@ private static void writeBuffer(ByteSizedBufferable obj, DataOutputStream out) t
     }
 
     // Write buffer
-    ByteBuffer bb = ByteBuffer.allocate(len).order(ByteOrder.nativeOrder());
-    obj.buffer(bb);
-    out.write(bb.array());
+    ByteBuffer buffer = ByteBuffer.allocate(length).order(ByteOrder.nativeOrder());
+    obj.buffer(buffer);
+    out.write(buffer.array());
 }
 ```
 
@@ -706,8 +705,8 @@ for(int n = 0; n < num; ++n) {
 Next the vertex and index buffers are loaded:
 
 ```java
-ByteSizedBufferable vertices = loadBuffer(in);
-ByteSizedBufferable index = loadBuffer(in);
+MeshData vertices = loadBuffer(in);
+MeshData index = loadBuffer(in);
 ```
 
 And finally the mesh is instantiated:
@@ -718,11 +717,11 @@ return new AbstractMesh(primitive, new CompoundLayout(layout)) {
         return count;
     }
 
-    public ByteSizedBufferable vertices() {
+    public MeshData vertices() {
         return vertices;
     }
 
-    public Optional<ByteSizedBufferable> index() {
+    public Optional<MeshData> index() {
         return Optional.of(index);
     }
 };
@@ -731,21 +730,21 @@ return new AbstractMesh(primitive, new CompoundLayout(layout)) {
 The `loadBuffer` helper is the inverse of `writeBuffer` above:
 
 ```java
-private static ByteSizedBufferable loadBuffer(DataInputStream in) throws IOException {
+private static MeshData loadBuffer(DataInputStream in) throws IOException {
     // Read buffer size
-    int len = in.readInt();
+    int length = in.readInt();
     
     // Check for empty buffer
-    if(len == 0) {
+    if(length == 0) {
         return null;
     }
 
     // Load bytes
-    byte[] bytes = new byte[len];
+    byte[] bytes = new byte[length];
     in.readFully(bytes);
 
     // Convert to buffer
-    return ByteSizedBufferable.of(bytes);
+    return MeshData.of(bytes);
 }
 ```
 

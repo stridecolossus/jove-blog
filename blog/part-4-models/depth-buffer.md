@@ -4,31 +4,29 @@ title: Depth Buffers
 
 ---
 
-## Contents
+# Contents
 
 - [Overview](#overview)
 - [Camera](#camera)
 - [Depth Buffer](#depth-buffer)
-- [Swapchain Recreation](#swapchain-recreation)
 - [Improvements](#improvements)
+- [Summary](#summary)
 
 ---
 
-## Overview
+# Overview
 
 In this chapter we will render the chalet model constructed previously and resolve various visual problems that arise.
 
 Since we are now dealing with a model that has a specific orientation, the current view-transform matrix will be encapsulated into a _camera_ model that allows the application to more easily configure the view.  This will be extended in the next chapter to allow the camera to be dynamically controlled by the keyboard and mouse.
 
-First we introduce enhancements to the existing geometry classes to more explicitly support normals and the cardinal axes.
-
-Finally we will address swapchain recreation and also implement various improvements to simplify configuration of the presentation process.
+Finally various improvements are introduced to simplify configuration of the presentation process.
 
 ---
 
-## Framework
+# Camera
 
-### Normals Redux
+## Normals Redux
 
 Currently the application code is responsible for ensuring that vectors have been normalised as appropriate.  This either requires the overhead of checking whether a vector has already been normalised (albeit a relatively trivial test) or relying on documentation hints, neither of which are rigorous or explicit.
 
@@ -37,27 +35,24 @@ A better approach is to _enforce_ this requirement at compile-time, therefore th
 A _normal_ is a unit-vector:
 
 ```java
-public class Normal extends Vector implements Component {
-    public static final Layout LAYOUT = Layout.floats(3);
+public class Normal extends Vector {
+	public static final Layout LAYOUT = new Layout(SIZE, Type.NORMALIZED, true, Float.BYTES);
 
-    public Normal(Vector vec) {
-        super(normalize(vec));
-    }
-
-    @Override
-    public final float magnitude() {
-        return 1;
-    }
-
-    @Override
-    public Normal invert() {
-        return new Normal(super.invert());
-    }
-
-    @Override
-    public final Normal normalize() {
-        return this;
-    }
+	public Normal(Vector vec) {
+		super(normalize(vec));
+	}
+	
+	public final float magnitude() {
+		return 1;
+	}
+	
+	public Normal invert() {
+		return new Normal(super.invert());
+	}
+	
+	public final Normal normalize() {
+		return this;
+	}
 }
 ```
 
@@ -69,34 +64,22 @@ public final class Axis extends Normal {
         X = new Axis(0),
         Y = new Axis(1),
         Z = new Axis(2);
+
+	private final int index;
 }
 ```
 
 The vector of each axis is initialised in the constructor:
 
 ```java
-private final int index;
+private Axis(int ordinal) {
+	var array = new float[Vector.SIZE];
+	array[ordinal] = 1;
 
-private Axis(int index) {
-    super(axis(index));
-    this.index = index;
-}
-
-private static Vector axis(int index) {
-    float[] axis = new float[SIZE];
-    axis[index] = 1;
-    return new Vector(axis);
-}
-```
-
-The frequently used inverse axes are also pre-calculated and cached:
-
-```java
-private final Normal inv = super.invert();
-
-@Override
-public Normal invert() {
-    return inv;
+	Vector vector = new Vector(array);
+	super(vector);
+	this.ordinal = ordinal;
+	this.invert = new Normal(vector.invert());
 }
 ```
 
@@ -105,8 +88,8 @@ And finally the code to construct a rotation matrix about one of the cardinal ax
 ```java
 public Matrix rotation(float angle) {
     var matrix = new Matrix.Builder().identity();
-    float sin = MathsUtil.sin(angle);
-    float cos = MathsUtil.cos(angle);
+    float sin = MathsUtility.sin(angle);
+    float cos = MathsUtility.cos(angle);
     switch(index) {
         case 0 -> matrix.set(...);
         ...
@@ -125,36 +108,14 @@ The purpose of these changes are:
 
 3. The overhead of re-normalising is trivial where an already normalized vector is referenced as the base `Vector` type.
 
-4. The hierarchy now supports extension points for further optimisations.
-
-The implementation of the `matrix` method for a quaternion is less performant than the code for the cardinal axes.  For an immutable, one-off rotation this probably would not be a concern, but for frequently recalculated rotations about the cardinal axes the faster solution is preferable.  Therefore the axis-angle class selects the most appropriate algorithm:
-
-```java
-public class AxisAngle implements Rotation {
-    private final Normal axis;
-    private final float angle;
-
-    public Matrix matrix() {
-        if(axis instanceof Axis cardinal) {
-            return cardinal.rotation(angle);
-        }
-        else {
-            return Quaternion.of(this).matrix();
-        }
-    }
-}
-```
-
-Note that this implementation also now enforces the axis to be a unit-vector, the results for an arbitrary vector would be interesting!
-
-### Camera
+## Camera Model
 
 The camera is a model class representing the position and orientation of the viewer:
 
 ```java
 public class Camera {
-    private Point pos = Point.ORIGIN;
-    private Normal dir = Axis.Z;
+    private Point position = Point.ORIGIN;
+    private Normal direction = Axis.Z;
     private Normal up = Axis.Y;
 }
 ```
@@ -164,16 +125,16 @@ Note that under the hood the camera direction is the inverse of the view directi
 Mutators are provided to reposition the camera:
 
 ```java
-public void move(Point pos) {
-    this.pos = notNull(pos);
+public void move(Point position) {
+    this.pos = notNull(position);
 }
 
-public void move(Vector vec) {
-    pos = pos.add(vec);
+public void move(Vector vector) {
+    position = position.add(vector);
 }
 
-public void move(float dist) {
-    move(dir.multiply(dist));
+public void move(float distance) {
+    move(direction.multiply(distance));
 }
 ```
 
@@ -181,9 +142,11 @@ And the following convenience method points the camera at a given target:
 
 ```java
 public void look(Point target) {
-    if(pos.equals(target)) throw new IllegalArgumentException(...);
-    Vector look = Vector.between(target, pos);
-    direction(new Normal(look));
+	if(pos.equals(target)) {
+		throw new IllegalArgumentException(...);
+	}
+	Vector look = Vector.between(target, position);
+	direction(new Normal(look));
 }
 ```
 
@@ -233,8 +196,8 @@ The `update` method first determines the viewport axes based on the camera axes:
 
 ```java
 private void update() {
-    right = up.cross(dir).normalize();
-    Vector y = dir.cross(right).normalize();
+	right = up.cross(dir).normalize();
+	Vector y = dir.cross(right).normalize();
 	...
 }
 ```
@@ -254,49 +217,55 @@ And the view transformation matrix is constructed from the translation and rotat
 
 ```java
 // Build translation component
-Matrix trans = Matrix.translation(new Vector(pos).invert());
+Matrix translation = Matrix.translation(new Vector(position).invert());
 
 // Build rotation component
-Matrix rot = new Matrix.Builder()
+Matrix rotation = new Matrix.Builder()
     .identity()
     .row(0, right)
     .row(1, y)
-    .row(2, dir)
+    .row(2, direction)
     .build();
 
 // Create camera matrix
-matrix = rot.multiply(trans);
+matrix = translation.multiply(rotation);
 ```
 
-### Draw Command
+## Draw Command
 
-The draw command will need to be updated for the indexed chalet model, we take the opportunity to implement a convenience builder on the `DrawCommand` class:
+The draw command is different for an indexed model, therefore we take the opportunity to implement a proper abstraction:
 
 ```java
-public static class Builder {
-    private boolean indexed;
-    private int count;
-    private int firstVertex;
-    private int firstIndex;
-    private int instanceCount = 1;
-    private int firstInstance;
+public record DrawCommand(...) implements Command {
+	/**
+	 * Constructor.
+	 * @param vertexCount			Number of vertices
+	 * @param instanceCount			Number of instances
+	 * @param firstVertex			First vertex
+	 * @param firstInstance			First instance
+	 * @param firstIndex			Optional starting index
+	 * @param library				Drawing library
+	 */
+	public DrawCommand {
+		...
+	}
 }
 ```
 
-The build method selects the appropriate command variant depending on the supplied arguments:
+The new class selects the appropriate draw command:
 
 ```java
-public DrawCommand build() {
-    if(indexed) {
-        return (lib, buffer) -> lib.vkCmdDrawIndexed(buffer, count, instanceCount, firstIndex, firstVertex, firstInstance);
-    }
-    else {
-        return (lib, buffer) -> lib.vkCmdDraw(buffer, count, instanceCount, firstVertex, firstInstance);
-    }
+public void execute(Buffer buffer) {
+	if(firstIndex == null) {
+		library.vkCmdDraw(buffer, vertexCount, instanceCount, firstVertex, firstInstance);
+	}
+	else {
+		library.vkCmdDrawIndexed(buffer, vertexCount, instanceCount, firstIndex, firstVertex, firstInstance);
+	}
 }
 ```
 
-Convenience factory methods are added for common use-cases:
+A companion builder is also implemented along with convenience factory methods for common use-cases:
 
 ```java
 static DrawCommand draw(int count) {
@@ -311,14 +280,15 @@ static DrawCommand indexed(int count) {
 Finally a further helper is implemented to create a draw command for a given mesh:
 
 ```java
-static DrawCommand of(Mesh mesh) {
-    int count = mesh.count();
-    if(mesh instanceof IndexedMesh) {
-        return indexed(count);
-    }
-    else {
-        return draw(count);
-    }
+public static DrawCommand of(Mesh mesh, LogicalDevice device) {
+	var draw = new Builder();
+	draw.vertexCount(mesh.count());
+
+	if(mesh.index().isPresent()) {
+		draw.indexed();
+	}
+
+	return draw.build(device);
 }
 ```
 
@@ -330,59 +300,72 @@ Command draw = DrawCommand.of(mesh);
 
 ---
 
-## Depth Buffer
+# Depth Buffer
 
-### Integration #1
+## Integration #1
 
 A new `ModelDemo` project is started based on the previous rotating cube demo.
 
 The existing view-transform code is replaced with a camera:
 
 ```java
-public class CameraConfiguration {
+class CameraSetup {
     @Bean
-    public static Camera camera() {
-        Camera cam = new Camera();
-        cam.move(new Point(0, -0.5f, -2));
-        return cam;
+    static Camera camera() {
+        Camera camera = new Camera();
+        camera.move(new Point(0, -0.5f, -2));
+        return camera;
     }
 }
-```
-
-And the matrix bean is refactored accordingly:
-
-```java
-return projection.multiply(cam.matrix()).multiply(mesh);
 ```
 
 The previous VBO configuration is replaced with a new class that loads the persisted mesh:
 
 ```java
 @Configuration
-public class ModelConfiguration {
-    @Autowired private LogicalDevice dev;
-    @Autowired private Allocator allocator;
-    @Autowired private Pool graphics;
-
-    @Bean
-    public static Mesh model(DataSource src) {
-        var loader = new ResourceLoaderAdapter<>(src, new MeshLoader());
-        return loader.load("chalet.model");
-    }
+class Model {
+	@Bean
+	static Mesh load() throws IOException {
+		Path path = Path.of("chalet.model");
+		var loader = new MeshLoader();
+		...
+		return loader.load(path);
+	}
 }
 ```
 
-Then the VBO and index buffer objects are created for the mesh:
+To assist debugging the `load` method regenerates the model if the file is not present:
+
+```java
+if(!path.toFile().exists()) {
+	Mesh mesh = create();
+	loader.write(mesh, path);
+}
+```
+
+Where `create` loads and builds the OBJ model:
+
+```java
+private static Mesh create() throws IOException {
+	var path = Path.of("chalet.obj");
+	var loader = new ObjectModelLoader();
+	try(var in = Files.newBufferedReader(path)) {
+		return loader.load(in).getFirst();
+	}
+}
+```
+
+The VBO and index buffers are created for the mesh:
 
 ```java
 @Bean
-public VertexBuffer vbo(Mesh mesh) {
+static VertexBuffer vbo(Mesh mesh) {
     VulkanBuffer buffer = buffer(mesh.vertices(), VkBufferUsage.VERTEX_BUFFER);
     return new VertexBuffer(buffer);
 }
 
 @Bean
-public IndexBuffer index(Mesh mesh) {
+static IndexBuffer index(Mesh mesh) {
     VulkanBuffer buffer = buffer(mesh.index().get(), VkBufferUsage.INDEX_BUFFER);
     return new IndexBuffer(buffer, VkIndexType.UINT32);
 }
@@ -391,19 +374,19 @@ public IndexBuffer index(Mesh mesh) {
 Which both delegate to the following helper:
 
 ```java
-private VulkanBuffer buffer(ByteSizedBufferable data, VkBufferUsage usage) {
+private VulkanBuffer buffer(Allocator allocator, MeshData data, VkBufferUsage usage) {
     // Create staging buffer
-    VulkanBuffer staging = VulkanBuffer.staging(dev, allocator, data);
+    VulkanBuffer staging = VulkanBuffer.staging(allocator, data);
 
     // Init buffer memory properties
-    var props = new MemoryProperties.Builder<VkBufferUsage>()
+    var properties = new MemoryProperties.Builder<VkBufferUsage>()
         .usage(VkBufferUsage.TRANSFER_DST)
         .usage(usage)
         .required(VkMemoryProperty.DEVICE_LOCAL)
         .build();
 
     // Create buffer
-    VulkanBuffer buffer = VulkanBuffer.create(dev, allocator, staging.length(), props);
+    var buffer = VulkanBuffer.create(allocator, staging.length(), properties);
 
     // Copy staging to buffer
     staging.copy(buffer).submit(graphics);
@@ -424,18 +407,14 @@ static Command index(IndexBuffer index) {
 }
 ```
 
-The chalet model is orientated with the viewer looking down from above, therefore the `update` method is refactored to introduce a local model transformation:
+The chalet model is orientated with the viewer looking down from above, therefore a _model_ transformation is added:
 
 ```java
 @Bean
-public FrameListener update(ResourceBuffer uniform) {
-    return frame -> {
-        Matrix tilt = new AxisAngle(Axis.X, toRadians(-90)).matrix();
-        Matrix rot = new AxisAngle(Axis.Y, toRadians(120)).matrix();
-        Matrix model = rot.multiply(tilt);
-        Matrix matrix = projection.multiply(cam.matrix()).multiply(model);
-        matrix.buffer(uniform.buffer());
-    };
+static Matrix modelmatrix() {
+	Matrix tilt = new AxisAngle(Axis.X, toRadians(-90)).matrix();
+	Matrix rot = new AxisAngle(Axis.Y, toRadians(120)).matrix();
+	return rot.multiply(tilt);
 }
 ```
 
@@ -447,13 +426,56 @@ Where:
 
 * Note that the camera was also moved slightly above the 'ground' level.
 
+The view transform now comprises _three_ matrices that will be composed in the shader rather than multiplied together in code:
+
+```glsl
+layout(set=0, binding=1) uniform Matrices {
+    mat4 projection;
+    mat4 view;
+    mat4 model;
+};
+```
+
+Which are multiplied together to transform each vertex:
+
+```glsl
+void main() {
+    gl_Position = projection * view * model * vec4(pos, 1.0);
+    fragCoords = coords;
+}
+```
+
+The uniform buffer is expanded to account for the three elements:
+
+```java
+static VulkanBuffer uniformBuffer(Allocator allocator) {
+	...
+	long length = 3 * Matrix.LAYOUT.stride();
+	return VulkanBuffer.create(allocator, length, properties);
+}
+```
+
+And initialised as follows:
+
+```java
+@Bean
+static Resource uniform(VulkanBuffer uniformBuffer, Matrix projection, Camera camera, Matrix modelmatrix) {
+	var uniform = new ResourceBuffer(VkDescriptorType.UNIFORM_BUFFER, 0L, buffer);
+	ByteBuffer bb = matrixBuffers[n].buffer();
+	projection.buffer(bb);
+	camera.matrix().buffer(bb);
+	modelmatrix.buffer(bb);
+	return uniform;
+}
+```
+
 When we run the demo the results are a bit of a mess:
 
 ![Broken Chalet Model](mess.png)
 
 There are a couple of issues here but the most obvious is that the texture appears to be upside down, the grass is obviously on the roof and vice-versa.
 
-### Texture Coordinate Invert
+## Texture Coordinate Invert
 
 The upside-down texture is due to the fact that OBJ texture coordinates (and OpenGL) assume an origin at the bottom-left corner of the image whereas Vulkan uses the top-left corner.
 
@@ -488,25 +510,73 @@ After regenerating the model it now looks to be textured correctly, in particula
 
 ![Less Broken Chalet Model](mess2.png)
 
-### Depth Test
+## Depth Test
 
-The second problem is that fragments are being rendered arbitrarily overlapping - either the geometry needs to be ordered by distance from the camera, or the _depth test_ is enabled to ensure that obscured fragments are ignored.  The depth test uses the _depth buffer_ which is a special attachment that records the distance of each rendered fragment, discarding subsequent fragments that are closer to the camera.
+The second problem is that fragments are being rendered arbitrarily overlapping.  This is solved by enabling the _depth test_ which ensures that obscured fragments are either overwritten by nearer geometry or discarded altogether, based on distance from the camera.
 
 The depth test is configured by a new pipeline stage:
 
 ```java
-public class DepthStencilStageBuilder extends AbstractPipelineBuilder<VkPipelineDepthStencilStateCreateInfo> {
+public class DepthStencilStage extends AbstractPipelineBuilder<VkPipelineDepthStencilStateCreateInfo> {
     private final VkPipelineDepthStencilStateCreateInfo info = new VkPipelineDepthStencilStateCreateInfo();
 
     public DepthStencilStageBuilder() {
         enable(false);
         write(true);
-        compare(VkCompareOp.LESS_OR_EQUAL);
+        compare(VkCompareOp.LESS);
     }
 }
 ```
 
-In the previous demos the clear value for the colour attachments was hard-coded, with the addition of the depth buffer this functionality now needs to be properly implemented.
+The depth test uses the _depth buffer_ which is a special attachment that records the distance of each rendered fragment, and discards subsequent fragments that are hidden.
+
+Since we are now dealing with multiple types of attachments the existing framework needs to be revised to support both.  Additionally in the previous demos the clear value for the colour attachments was hard-coded, with the addition of the depth buffer this functionality now needs to be properly implemented.
+
+## Attachments
+
+The following are required to support both colour and depth attachments:
+
+* The attachment description.
+
+* An optional clear value with properties specific to that type of attachment.
+
+* The image views for that attachment: either the swapchain images for the colour attachment or the _single_ depth-stencil attachment.
+
+Perhaps surprisingly there is no equivalent Vulkan object for an 'attachment' as such, or an enumeration to differentiate the various types of attachment.  Therefore we introduce the following new type that aggregates these properties:
+
+```java
+public class Attachment {
+	public enum AttachmentType {
+		COLOUR,
+		DEPTH
+	}
+
+	private final AttachmentType type;
+	private final AttachmentDescription description;
+	private final IntFunction<View> views;
+	private ClearValue clear;
+}
+```
+
+Where:
+
+* The attachment `type` allows the code to switch behaviour as required without trying to derive the 'type' from the description.
+
+* The `views` function returns the image-views for that attachment.
+
+The existing attachment reference is also moved into this new type and a helper can now be implemented to create simple references:
+
+```java
+public Reference reference() {
+	VkImageLayout layout = switch(type) {
+		case COLOUR -> VkImageLayout.COLOR_ATTACHMENT_OPTIMAL;
+		case DEPTH	-> VkImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	};
+	return new Reference(this, layout);
+}
+```
+
+## Clear Values
 
 Introducing clear values should have been easy, however there was a nasty surprise when adding the depth-stencil to the demo, with JNA throwing the infamous `Invalid memory access` error.  Eventually we realised that `VkClearValue` and `VkClearColorValue` are in fact __unions__ and not structures.  Vulkan is expecting __either__ a colour array __or__ a depth floating-point value, whereas we are currently sending both for all attachments, probably resulting in some sort of buffer offset problem.
 
@@ -517,12 +587,10 @@ As far as we can tell this is the __only__ instance of the use of a union in the
 A clear value is defined by the following abstraction:
 
 ```java
-public interface ClearValue {
-    /**
-     * Populates the given clear value descriptor.
-     * @param value Descriptor
-     */
-    void populate(VkClearValue value);
+public sealed interface ClearValue {
+    static void populate(VkClearValue value) {
+    	...
+    }
 }
 ```
 
@@ -557,33 +625,14 @@ record DepthClearValue(Percentile depth) implements ClearValue {
 }
 ```
 
-The clear value now becomes a mutable property of the image view:
-
-```java
-public class View extends AbstractVulkanObject {
-    private ClearValue clear;
-
-    public Optional<ClearValue> clear() {
-        return Optional.ofNullable(clear);
-    }
-
-    public View clear(ClearValue clear) {
-        this.clear = clear;
-        return this;
-    }
-}
-```
-
-The builder for the swapchain class is also refactored to conveniently initialise a clear colour for all swapchain images.
-
 Finally the `begin` method of the frame buffer is updated to populate the clear values at the start of the render-pass:
 
 ```java
 // Enumerate clear values
-Collection<ClearValue> clear = attachments
+List<ClearValue> clear = pass
+	.attachments()
     .stream()
-    .map(View::clear)
-    .flatMap(Optional::stream)
+    .map(Attachment::clear)
     .toList();
 
 // Init clear values
@@ -591,34 +640,41 @@ info.clearValueCount = clear.size();
 info.pClearValues = StructureCollector.pointer(clear, new VkClearValue(), ClearValue::populate);
 ```
 
-### Integration #2
+## Integration #2
 
-To use the depth test in the demo a new depth-stencil attachment is added to the render-pass configuration:
+To use the depth test in the demo a new depth-stencil attachment is added to the configuration:
 
 ```java
-Attachment colour = ...
-
-Attachment depth = new Attachment.Builder()
+AttachmentDescription description = new AttachmentDescription.Builder()
     .format(VkFormat.D32_SFLOAT)
     .load(VkAttachmentLoadOp.CLEAR)
     .finalLayout(VkImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
     .build();
 
-Subpass subpass = new Subpass()
-    .colour(colour)
-    .depth(depth, VkImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-    ...
+Attachment depth = new Attachment(AttachmentType.DEPTH, description, _ -> view);
 ```
 
 Notes:
 
-* The format of the depth buffer attachment is temporarily hard-coded to one that is commonly available on most Vulkan implementations.
+* The format of the depth buffer is temporarily hard-coded to `D32_SFLOAT` which is commonly available on most Vulkan implementations.
 
 * The _store_ operation is left as the `DONT_CARE` default.
 
-* Similarly the _old layout_ property is `UNDEFINED` since the previous contents are not relevant.
+* Similarly the _old layout_ property is `UNDEFINED` since the previous contents are not relevant for the depth-stencil.
 
-Unlike the swapchain images the application is responsible for creating and managing the image for the depth buffer attachment:
+* The depth attachment returns a _single_ image view.
+
+The depth attachment is then added to the render pass:
+
+```java
+Subpass subpass = new Subpass()
+    .add(colour.reference())
+    .add(depth.reference(VkImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL))
+    ...
+```
+
+Unlike the swapchain images the application is responsible for creating and managing the image for the depth buffer attachment.
+First the properties of the image are specified:
 
 ```java
 @Bean
@@ -633,7 +689,7 @@ public View depth(Swapchain swapchain, Allocator allocator) {
 }
 ```
 
-Next the image for the depth attachment is instantiated:
+Next the image is instantiated:
 
 ```java
 var props = new MemoryProperties.Builder<VkImageUsageFlag>()
@@ -648,19 +704,18 @@ Image image = new Image.Builder()
     .build(dev, allocator);
 ```
 
-And a view is created with a depth clear value:
+From which a view is created:
 
 ```java
-return new View.Builder(image).clear(DepthClearValue.DEFAULT).build();
+return new View.Builder(image).build();
 ```
 
-The depth buffer attachment is then added to each frame buffer along with the colour attachments:
+
+The clear values for the demo can now be configured:
 
 ```java
-@Bean
-public static FrameBuffer.Group frames(Swapchain swapchain, RenderPass pass, View depth) {
-    return new FrameBuffer.Group(swapchain, pass, List.of(depth));
-}
+colour.clear(new ColourClearValue(...));
+depth.clear(new DepthClearValue(1));
 ```
 
 Finally the depth test is enabled in the pipeline configuration:
@@ -685,287 +740,9 @@ Ta-da!
 
 ---
 
-## Swapchain Recreation
+# Improvements
 
-### Overview
-
-So far we have avoided the case where the swapchain has been invalidated (when the window is resized or minimised), signalled by the `SwapchainInvalidated` exception in the acquire and presentation steps of the rendering process.
-
-This is because management of the swapchain (and therefore also the frame buffers) is a responsibility of the application, there is no Vulkan method to simply recreate the swapchain for example.
-A new swapchain _instance_ and set of frame buffers has to be created whenever the rendering surface has become invalid.
-
-The obvious implication is that we cannot simply pass around a singleton reference (as we currently do in the Spring based demo application) but instead need a level of indirection.
-Therefore we will introduce a new management component that is responsible for creating a swapchain and frame buffer group on demand.
-
-Note that it is possible for the swapchain image format to change during the applications lifetime (e.g. when moving the window to a higher dynamic range monitor), which would also require recreation of the render pass.  This requirement will remain out-of-scope for the forseeable future.
-
-### Swapchain Adapter
-
-The following new component replaces the previous frame buffer `Group` and composes a builder for the swapchain:
-
-```java
-public class SwapchainAdapter implements TransientObject {
-    private final RenderPass pass;
-    private final Swapchain.Builder builder;
-    private final List<View> additional;
-    private FrameBuffer[] buffers;
-    private Swapchain swapchain;
-
-    public SwapchainAdapter(...) {
-        ...
-        createSwapchain();
-        createBuffers();
-    }
-}
-```
-
-The constructor instantiates a new swapchain on demand:
-
-```java
-private void createSwapchain() {
-    swapchain = builder.build(pass.device());
-}
-```
-
-And similarly for the frame buffers:
-
-```java
-private void createBuffers() {
-    var extents = new Rectangle(swapchain.extents());
-    buffers = swapchain
-        .attachments()
-        .stream()
-        .map(this::attachments)
-        .map(attachments -> FrameBuffer.create(pass, extents, attachments))
-        .toArray(FrameBuffer[]::new);
-}
-```
-
-Where the `attachments` is the aggregated set of image views for each swapchain buffer:
-
-```java
-private List<View> attachments(View col) {
-    List<View> attachments = new ArrayList<>();
-    attachments.add(col);
-    attachments.addAll(additional);
-    return attachments;
-}
-```
-
-The following method can then be invoked to recreate the swapchain and frame buffers as required:
-
-```java
-public void recreate() {
-    // Wait for all rendering work to complete
-    swapchain.device().waitIdle();
-
-    // Release swapchain and buffers
-    destroy();
-
-    // Recreate swapchain
-    createSwapchain();
-    createBuffers();
-}
-```
-
-Note that the `recreate` method waits for any existing work to complete.
-
-Finally the transient data is released on shutdown or whenever the swapchain is recreated:
-
-```java
-public void destroy() {
-    swapchain.destroy();
-    for(FrameBuffer fb : buffers) {
-        fb.destroy();
-    }
-}
-```
-
-In the `VulkanRenderTask` the only modification required is a handler that creates the swapchain and frame buffers when the surface has been invalidated:
-
-```java
-public void render() {
-    try {
-        frame();
-    }
-    catch(SwapchainInvalidated e) {
-        adapter.recreate();
-    }
-}
-```
-
-In the demo application the existing swapchain and frame buffer group are replaced by a new bean for a swapchain adapter.
-However note that the swapchain should never actually need to be recreated in the existing demo since the window dimensions are fixed.
-
-### Minimised Windows
-
-The application is still required to handle the case where the window is minimised.  In this situation the render loop essentially needs to be paused until the window is restored.
-
-First a new GLFW callback is defined for a minimised window (or _iconified_ in GLFW terms):
-
-```java
-interface DesktopLibraryWindow {
-    @FunctionalInterface
-    interface WindowStateListener extends Callback {
-        /**
-         * Notifies that a window state change.
-         * @param window        Window
-         * @param state         State
-         */
-        void state(Pointer window, int state);
-    }
-    
-    /**
-     * Sets the iconify listener of a window.
-     * @param window        Window
-     * @param listener      Iconify listener
-     */
-    void glfwSetWindowIconifyCallback(Window window, WindowStateListener listener);
-}
-```
-
-We note that there are several other GLFW window states that follow the same pattern, so we might as well implement a common solution:
-
-```java
-void glfwSetWindowCloseCallback(Window window, WindowStateListener listener);
-void glfwSetWindowFocusCallback(Window window, WindowStateListener listener);
-void glfwSetCursorEnterCallback(Window window, WindowStateListener listener);
-```
-
-Note that although GLFW has different callback definitions for each window state, the method signature is the same in all cases and is defined by the `WindowStateListener` interface.
-
-Next a new abstraction is introduced for the various window states:
-
-```java
-public interface WindowListener {
-    public enum Type {
-        ENTER,
-        FOCUS,
-        ICONIFIED,
-        CLOSE
-    }
-
-    /**
-     * Notifies a window state change.
-     * @param type      State change type
-     * @param state     State
-     */
-    void state(Type type, boolean state);
-}
-```
-
-Which can then be used in the following method to register a listener on the window for all supported events:
-
-```java
-@MainThread
-public void listener(WindowListener.Type type, WindowListener listener) {
-    DesktopLibrary lib = desktop.library();
-    BiConsumer<Window, WindowStateListener> method = switch(type) {
-        case ENTER -> lib::glfwSetCursorEnterCallback;
-        case FOCUS -> lib::glfwSetWindowFocusCallback;
-        case ICONIFIED -> lib::glfwSetWindowIconifyCallback;
-        case CLOSED -> lib::glfwSetWindowCloseCallback;
-    };
-    ...
-}
-```
-
-Which delegates to the relevant GLFW method:
-
-```java
-if(listener == null) {
-    method.accept(this, null);
-    register(type, null);
-}
-else {
-    WindowStateListener adapter = (ptr, state) -> listener.state(type, NativeBooleanConverter.of(state));
-    method.accept(this, adapter);
-    register(type, adapter);
-}
-```
-
-The local `register` method holds a weak-reference to an attached listener:
-
-```java
-class Window {
-    private final Map<Object, Callback> registry = new WeakHashMap<>();
-
-    protected void register(Object key, Callback callback) {
-        if(callback == null) {
-            registry.remove(key);
-        }
-        else {
-            registry.put(key, callback);
-        }
-    }
-}
-```
-
-This prevents the listener being garbage collected and therefore de-registered, since it is out-of-scope at the end of the `listener` method.
-This approach removes the responsibility for managing the listeners from the application, which we had to do explicitly for the key listener previously.
-
-Next the render loop is refactored to promote the `executor` and render `task` to class members and to add a new `paused` flag:
-
-```java
-public class RenderLoop {
-    private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-    private Runnable task;
-    private boolean paused;
-}
-```
-
-The `pause` method essentially cancels the scheduler:
-
-```java
-public void pause() {
-    if(!isRunning()) throw new IllegalStateException();
-    if(paused) throw new IllegalStateException();
-    future.cancel(true);
-    paused = true;
-}
-```
-
-Which is restarted in the inverse method:
-
-```java
-public void restart() {
-    if(!paused) throw new IllegalStateException();
-    schedule();
-    paused = false;
-}
-```
-
-The `DesktopConfiguration` is modified to register the minimise event which delegates to the modified render loop:
-
-```java
-@Autowired
-void pause(RenderLoop loop, Window window) {
-    WindowListener minimised = (__, state) -> {
-        if(state) {
-            loop.pause();
-        }
-        else {
-            loop.restart();
-        }
-    };
-    window.listener(WindowListener.Type.ICONIFIED, minimised);
-}
-```
-
-And a close handler is also registered so we can _finally_ close the window:
-
-```java
-@Autowired
-void close(Window window) {
-    window.listener(WindowListener.Type.CLOSED, (type, state) -> System.exit(0));
-}
-```
-
----
-
-## Improvements
-
-### Format Selector
+## Format Selector
 
 Rather than hard-coding the format of the depth buffer the following helper is implemented to select a suitable format from a list of candidates:
 
@@ -1017,7 +794,7 @@ public View depth(Swapchain swapchain, Allocator allocator) {
 }
 ```
 
-### Swapchain Configuration
+## Swapchain Configuration
 
 We also make some modifications to the configuration of the swapchain to select various properties rather than hard-coding.
 
@@ -1089,28 +866,7 @@ public Swapchain swapchain(Surface surface, ApplicationConfiguration cfg) {
 }
 ```
 
-Finally the surface property accessors can be cached to minimise API calls:
-
-```java
-public Surface cached() {
-    return new Surface(handle, dev) {
-        private final Supplier<VkSurfaceCapabilitiesKHR> caps = new LazySupplier<>(super::capabilities);
-        private final Supplier<List<VkSurfaceFormatKHR>> formats = new LazySupplier<>(super::formats);
-        private final Supplier<Set<VkPresentModeKHR>> modes = new LazySupplier<>(super::modes);
-
-        @Override
-        public VkSurfaceCapabilitiesKHR capabilities() {
-            return caps.get();
-        }
-        
-        ...
-    };
-}
-```
-
-Where `LazySupplier` returns a singleton instance using a relatively cheap thread-safe implementation.
-
-### Global Flip
+## Global Flip
 
 By default the Vulkan Y axis points __down__ which is the opposite direction to OpenGL (and just about every other 3D library).
 
@@ -1143,17 +899,21 @@ Therefore `flip` is an optional helper method and we just accept that the Y dire
 
 ---
 
-## Summary
+# Summary
 
-In this chapter we implemented:
+This chapter introduced the _depth test_ by implementation of the following:
 
-- The camera model.
+- A camera model.
+
+- Vertex normals and the cardinal axes.
 
 - A builder for draw commands.
 
+- Texture coordinate inversion for OBJ models.
+
 - The depth-stencil pipeline stage.
 
-- A mechanism to clear colour and depth-stencil attachments.
+- A refactored attachment class to support both colour and depth-stencil attachments.
 
-- Texture coordinate inversion for OBJ models.
+- A mechanism to configure attachment clear values.
 

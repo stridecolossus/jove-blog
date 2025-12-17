@@ -662,7 +662,7 @@ private Transformer transformer(Method method, Class<?> type) {
 
 The GLFW library is now fully supported by the new framework, other than the following which are deferred until later:
 
-* Callback support for GLFW devices is temporarily hacked out.
+* Callback support for GLFW devices is temporarily hacked out and will be addressed separately in the next chapter.
 
 * The `glfwGetRequiredInstanceExtensions` edge case is hard-coded for the moment.
 
@@ -1711,7 +1711,7 @@ Note that the `factory` constructed above is also used here to instantiate the n
 
 Diagnostic handlers can now be attached to the instance as before, which is very useful given the invasive changes being made to JOVE.  A good test of the refactor is to temporarily remove the code that releases attached handlers when the instance is destroyed, which should result in Vulkan complaining about orphaned objects.
 
-There is a fair amount of hard-coded FFM logic here that will (hopefully) be simplified when callbacks for GLFW are addressed later.
+There is a fair amount of hard-coded FFM logic here that will (hopefully) be simplified when callbacks are implemented for GLFW (in the next chapter).
 
 ----
 
@@ -2688,104 +2688,6 @@ public List<String> extensions() {
     return List.of(array);
 }
 ```
-
-## Callbacks
-
-To support callbacks _from_ the native layer (largely for GLFW input devices) the following new JOVE type and companion transformer are introduced:
-
-```java
-public interface Callback {
-	class CallbackTransformerFactory implements Registry.Factory<Callback> {
-		private final Linker linker = Linker.nativeLinker();
-		private final Registry registry;
-	}
-}
-```
-
-The transformer builds the _upcall stub_ for a given callback on demand:
-
-```java
-public Transformer<Callback, MemorySegment> transformer(Class<? extends Callback> type) {
-	return new Transformer<>() {
-		private final Method method = method(type);
-
-		public MemorySegment marshal(Callback callback, SegmentAllocator allocator) {
-			return upcall(method, callback);
-		}
-	};
-}
-```
-
-The `Callback` interface itself cannot be declared a `@FunctionalInterface`, therefore the following code validates that a given callback declares a _single_ method:
-
-```java
-private static Method method(Class<? extends Callback> callback) {
-	Method[] methods = callback.getDeclaredMethods();
-	if(methods.length != 1) {
-		throw new IllegalArgumentException(...);
-	}
-	return methods[0];
-}
-```
-
-A method handle is reflected from the callback instance:
-
-```java
-MethodHandle handle = MethodHandles
-	.lookup()
-	.unreflect(method)
-	.bindTo(instance);
-```
-
-Which is then linked to the native library:
-
-```java
-return linker.upcallStub(handle, descriptor, Arena.global());
-```
-
-Notes:
-
-* The stub is created using the global arena, otherwise the linker will fail.
-
-* Callback stubs are generated on demand in each invocation of the `marshal` method.  This does not feel right but there is not really any  other way to interpret the FFM upcall API.
-
-For the moment callbacks are restricted to primitives and `MemorySegment` parameters.  Further analysis and design is required to determine how best to support domain types such as structures.  This might look like a bit of a cop out, but in any case GLFW only requires primitive parameters (except for the window handle which is ignored anyway).  The only other callback is the diagnostic handler which is treated as a special case for now.
-
-The following snippet of the device library illustrates a callback in action:
-
-```java
-interface DeviceLibrary {
-	@FunctionalInterface
-	interface MouseListener extends Callback {
-		void event(MemorySegment window, double x, double y);
-	}
-
-	void glfwSetCursorPosCallback(Window window, MouseListener listener);
-
-	void glfwSetScrollCallback(Window window, MouseListener listener);
-}
-```
-
-Which slots transparently into the existing device and event handling framework:
-
-```java
-public class MousePointer extends AbstractWindowDevice<ScreenCoordinate, MouseListener> {
-	protected MouseListener callback(Window window, Consumer<ScreenCoordinate> listener) {
-		return new MouseListener() {
-			public void event(MemorySegment window, double x, double y) {
-				var pos = new ScreenCoordinate((int) x, (int) y);
-				listener.accept(pos);
-			}
-		};
-	}
-
-	protected BiConsumer<Window, MouseListener> method(DeviceLibrary library) {
-		return library::glfwSetCursorPosCallback;
-	}
-}
-```
-
-Finally the callback instance is now encapsulated in the device base-class, ensuring it is not garbage-collected until the listener is _explicitly_ removed by the application.  Therefore the weak map of callbacks in the window class is redundant and can be removed, simplifying the code and reducing inter-dependencies.
 
 ----
  

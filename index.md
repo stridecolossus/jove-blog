@@ -37,20 +37,20 @@ The [Vulkan Object Index](blog/part-1-intro/vulkan-index) links to the relevant 
     - [Descriptor Sets](blog/part-3-cube/descriptor-sets)
     - [Perspective Projection](blog/part-3-cube/perspective)
     - [Render Loop](blog/part-3-cube/render-loop)
-   
+
 - Part 4 - Models
     - [Model Loader](blog/part-4-models/model-loader)
     - [Depth Buffers](blog/part-4-models/depth-buffer)
+    - [Input Devices](blog/part-4-models/input-devices)
     - [Panama Refactor](blog/part-4-models/panama)
-    - [Input Handling](blog/part-4-models/input-handling)
     - [Swapchain Recreation](blog/part-4-models/swapchain-recreation)
     
 - Part 5 - Scenes
 	TODO...
-    - [Skybox](blog/part-4-models/skybox)
-    - [Terrain Tesselation](blog/part-5-terrain/tesselation)
-    - [Miscellany](blog/part-5-terrain/miscellany)
-	- [Particle System](blog/part-5-terrain/particle-system)
+    - [Skybox](blog/part-5-scenes/skybox)
+    - [Terrain Tesselation](blog/part-5-scenes/tesselation)
+    - [Miscellany](blog/part-5-scenes/miscellany)
+	- [Particle System](blog/part-5-scenes/particle-system)
 	...TODO
 
 ---

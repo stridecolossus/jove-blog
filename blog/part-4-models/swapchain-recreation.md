@@ -610,8 +610,7 @@ The basic swapchain properties are initialised _once_ in the code:
 ```java
 var builder = new Swapchain.Builder()
     .clipped(true)
-    .init(properties.capabilities())
-    .clear(new Colour(0.3f, 0.3f, 0.3f, 1f));
+    .init(properties.capabilities());
 ```
 
 With the more complex configuration specified separately as appropriate for a given application:
@@ -641,15 +640,15 @@ public class RenderTask implements Runnable, TransientObject {
 	private final Framebuffer.Factory factory;
 	...
 
-    @Override
-    public void run() {
-        try {
-            render();
-        }
-        catch(Swapchain.Invalidated e) {
-        	recreate();
-        }
-    }
+	@Override
+	public void run() {
+		try {
+			render();
+		}
+		catch(Swapchain.Invalidated e) {
+			recreate();
+		}
+	}
 }
 ```
 

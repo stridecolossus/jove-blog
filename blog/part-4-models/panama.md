@@ -23,7 +23,7 @@ It had always been the intention at some point to re-implement the _bindings_ to
 
 With the LTS release of JDK 21 the FFM library was elevated to a preview feature (rather than requiring an incubator build) and much more information and tutorials started to appear online, so it was high time to replace JNA with the more future proofed (and safer) FFM solution.
 
-The following section analyses the requirements for the refactoring work.  The remaining sections iteratively integrate the FFM solution into the existing code base.
+In the next section the requirements are documented and analysed to determine the scope of the refactoring work.  The following sections iteratively integrate FFM into the existing code base.
 
 ---
 
@@ -37,13 +37,13 @@ We use the tool and compare and contrast with a theoretical custom implementatio
 
 Generating the FFM bindings using `jextract` is relatively trivial and takes a couple of seconds:
 
-`jextract --source \VulkanSDK\1.2.154.1\Include\vulkan\vulkan.h`
+`jextract --source /VulkanSDK/.../Include/vulkan/vulkan.h`
 
 The advantages of using the tool are obvious:
 
 * Proven and standard JVM technology.
 
-* Automated, in particular the FFM memory layouts for native structures.
+* Automated, in particular the generation of the FFM memory layout for native structures.
 
 However there are disadvantages:
 
@@ -2688,6 +2688,32 @@ public List<String> extensions() {
     return List.of(array);
 }
 ```
+
+## Device Memory
+
+As it turns out the migration actually simplifies the `memory` package of JOVE.  The existing `Region` abstraction is essentially equivalent to an FFM `MemorySegment` and can therefore be replaced accordingly.
+
+A memory segment also provides the `asByteBuffer` helper which is used in the `VulkanBuffer` class to access the underlying memory:
+
+```java
+public ByteBuffer buffer() {
+    return this
+        .map()
+        .asByteBuffer()
+        .order(ByteOrder.nativeOrder());
+}
+```
+
+Similarly copying a byte array to a buffer is also considerably simpler:
+
+```java
+public void write(byte[] data) {
+    MemorySegment address = this.map();
+    MemorySegment.copy(data, 0, address, ValueLayout.JAVA_BYTE, 0L, data.length);
+}
+```
+
+Note that JOVE generally continues to use NIO byte buffers when (for example) constructing vertex data to be written to device memory.  We did consider replacing NIO buffers completely, however the convenience of the existing approach outweighs the effort required to refactor for little benefit.
 
 ----
  

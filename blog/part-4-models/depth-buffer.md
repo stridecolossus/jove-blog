@@ -244,7 +244,7 @@ public record DrawCommand(...) implements Command {
 	 * @param firstVertex			First vertex
 	 * @param firstInstance			First instance
 	 * @param firstIndex			Optional starting index
-	 * @param library				Drawing library
+	 * @param library			Drawing library
 	 */
 	public DrawCommand {
 		...
@@ -252,7 +252,7 @@ public record DrawCommand(...) implements Command {
 }
 ```
 
-The new class selects the appropriate draw command:
+The new class selects the appropriate command variant:
 
 ```java
 public void execute(Buffer buffer) {

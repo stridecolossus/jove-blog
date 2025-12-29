@@ -536,44 +536,208 @@ Since we are now dealing with multiple types of attachments the existing framewo
 
 The following are required to support both colour and depth attachments:
 
-* The attachment description.
+* An attachment description.
 
-* An optional clear value with properties specific to that type of attachment.
+* The image format.
 
 * The image views for that attachment: either the swapchain images for the colour attachment or the _single_ depth-stencil attachment.
 
-Perhaps surprisingly there is no equivalent Vulkan object for an 'attachment' as such, or an enumeration to differentiate the various types of attachment.  Therefore we introduce the following new type that aggregates these properties:
+* An optional clear value with properties specific to that type of attachment.
+
+Slightly surprisingly there is no separate, equivalent Vulkan object for an 'attachment' as such, instead these properties are essentially used individually by the collaborating objects (the render pass, framebuffers, etc) as required.  It seems logical to aggregate the above into a single, coherent type:
 
 ```java
-public class Attachment {
-	public enum AttachmentType {
-		COLOUR,
-		DEPTH
-	}
+public interface Attachment {
+    /**
+     * Types of attachment.
+     */
+    enum AttachmentType {
+        COLOUR,
+        DEPTH,
+        RESOLVE
+    }
 
-	private final AttachmentType type;
-	private final AttachmentDescription description;
-	private final IntFunction<View> views;
-	private ClearValue clear;
+    /**
+     * @return Type of attachment
+     */
+    AttachmentType type();
+
+    /**
+     * @return Image format
+     */
+    VkFormat format();
+
+    /**
+     * @return Attachment description
+     */
+    AttachmentDescription description();
+
+    /**
+     * Retrieves an image view of this attachment by index.
+     * @param index Frame index
+     * @return Attachment view for the given index
+     */
+    View view(int index);
+
+    /**
+     * @return Clear value for this attachment
+     */
+    ClearValue clear();
 }
 ```
 
-Where:
+The attachment _type_ may turn out to be superfluous since there will be multiple attachment sub-classes anyway.
 
-* The attachment `type` allows the code to switch behaviour as required without trying to derive the 'type' from the description.
-
-* The `views` function returns the image-views for that attachment.
-
-The existing attachment reference is also moved into this new type and a helper can now be implemented to create simple references:
+A skeleton implementation is added as a convenience base-class for attachments:
 
 ```java
-public Reference reference() {
-	VkImageLayout layout = switch(type) {
-		case COLOUR -> VkImageLayout.COLOR_ATTACHMENT_OPTIMAL;
-		case DEPTH	-> VkImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	};
-	return new Reference(this, layout);
+public abstract class AbstractAttachment extends AbstractTransientObject implements Attachment {
+    private final AttachmentType type;
+    private final AttachmentDescription description;
+    private List<View> views;
+    private ClearValue clear = new ClearValue.None();
 }
+```
+
+Note that the colour attachment has a separate image for each frame, whereas a __single__ depth-stencil image is shared across all frames:
+
+```java
+public View view(int index) {
+    return switch(type) {
+        case COLOUR -> views.get(index);
+        default -> views.getFirst();
+    };
+}
+```
+
+The synchronisation of the render pass ensures that only one pipeline stage is using the depth-stencil even though the overall rendering process is concurrent.
+
+The image views are destroyed when the attachment is released:
+
+```java
+protected void release() {
+    for(View view : views) {
+        view.destroy();
+    }
+    views = null;
+}
+```
+
+The colour attachment can now be implemented as follows:
+
+```java
+public class ColourAttachment extends AbstractAttachment {
+    private final Swapchain swapchain;
+
+    public ColourAttachment(AttachmentDescription description, Swapchain swapchain) {
+        super(AttachmentType.COLOUR, description);
+        this.swapchain = swapchain;
+        clear(Colour.BLACK);
+    }
+
+    public VkFormat format() {
+        return swapchain.format();
+    }
+}
+```
+
+A setter for the clear value is added specifically for the colour attachment:
+
+```java
+public void clear(Colour colour) {
+    super.clear(new ColourClearValue(colour));
+}
+```
+
+The views for the colour attachment are created from the swapchain images:
+
+```java
+protected List<View> views(LogicalDevice device, Dimensions extents) {
+    return swapchain
+        .attachments()
+        .stream()
+        .map(image -> View.of(device, image))
+        .toList();
+}
+```
+
+Finally a helper is added to the new attachment class to create a reference with default properties:
+
+```java
+public Attachment.Reference reference() {
+    return new Attachment.Reference(this, VkImageLayout.COLOR_ATTACHMENT_OPTIMAL);
+}
+```
+
+## Depth Attachment
+
+A second attachment implementation can now be added for the depth buffer:
+
+```java
+public class DepthStencilAttachment extends AbstractAttachment {
+    private final VkFormat format;
+    private final Allocator allocator;
+
+    public DepthStencilAttachment(VkFormat format, AttachmentDescription description, Allocator allocator) {
+        super(AttachmentType.DEPTH, description);
+        this.format = format;
+        this.allocator = allocator;
+        super.clear(DepthClearValue.DEFAULT);
+    }
+
+    public Attachment.Reference reference() {
+        return new Attachment.Reference(this, VkImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    }
+
+    public void clear(Percentile depth) {
+        super.clear(new DepthClearValue(depth));
+    }
+
+    protected List<View> views(LogicalDevice device, Dimensions extents) {
+        ...
+    }
+}
+```
+
+The depth-stencil attachment is also responsible for creating and managing the depth buffer image in addition to the attachment view, unlike the colour attachment where the images are created by Vulkan when the swapchain is instantiated.
+
+First an image descriptor specifies the properties of the depth buffer:
+
+```java
+var descriptor = new Image.Descriptor.Builder()
+    .aspect(VkImageAspectFlags.DEPTH)
+    .format(format)
+    .extents(extents)
+    .build();
+```
+
+The buffers memory is obviously device local:
+
+```java
+var properties = new MemoryProperties.Builder<VkImageUsageFlags>()
+    .usage(VkImageUsageFlags.DEPTH_STENCIL_ATTACHMENT)
+    .required(VkMemoryPropertyFlags.DEVICE_LOCAL)
+    .build();
+```
+
+The image can now be instantiated:
+
+```java
+Image image = new DefaultImage.Builder()
+    .descriptor(descriptor)
+    .properties(properties)
+    .tiling(VkImageTiling.OPTIMAL)
+    .build(allocator);
+```
+
+And wrapped by a single image view:
+
+```java
+View view = new View.Builder()
+    .release()
+    .build(device, image);
+
+return List.of(view);
 ```
 
 ## Clear Values
@@ -641,6 +805,8 @@ info.pClearValues = StructureCollector.pointer(clear, new VkClearValue(), ClearV
 ```
 
 ## Integration #2
+
+TODO...
 
 To use the depth test in the demo a new depth-stencil attachment is added to the configuration:
 
@@ -743,6 +909,30 @@ Ta-da!
 # Improvements
 
 ## Format Selector
+
+
+TODO...
+
+Finally the helper logic to select the image format of the depth buffer
+
+```java
+public class DepthStencilAttachment extends AbstractAttachment {
+    /**
+     * Commonly supported image formats for the depth-stencil attachment.
+     */
+    public static final List<VkFormat> IMAGE_FORMATS = List.of(VkFormat.D32_SFLOAT, VkFormat.D32_SFLOAT_S8_UINT, VkFormat.D24_UNORM_S8_UINT);
+
+    public static VkFormat format(Function<VkFormat, VkFormatProperties> provider, List<VkFormat> formats) {
+        var filter = new FormatFilter(provider, true, Set.of(VkFormatFeatureFlags.DEPTH_STENCIL_ATTACHMENT));
+        var selector = new PrioritySelector<>(filter);
+        return selector.select(formats);
+    }
+}
+```
+
+...TODO
+
+
 
 Rather than hard-coding the format of the depth buffer the following helper is implemented to select a suitable format from a list of candidates:
 
@@ -885,7 +1075,7 @@ public Viewport flip() {
 
 Notes:
 
-* This solution is only supported in Vulkan version 1.1.x or above.
+* This solution is only supported in Vulkan version 1.1 or above.
 
 * The Y coordinate of the viewport origin is also shifted to the bottom of the viewport.
 

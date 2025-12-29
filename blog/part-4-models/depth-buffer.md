@@ -665,7 +665,7 @@ public class DepthStencilAttachment extends AbstractAttachment {
         return new Attachment.Reference(this, VkImageLayout.DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     }
 
-    protected List<View> views(LogicalDevice device, Dimensions extents) {
+    public List<View> views(LogicalDevice device, Dimensions extents) {
         ...
     }
 }
@@ -875,6 +875,62 @@ With the depth buffer enabled we should finally be able to see the chalet model:
 ![Chalet Model](chalet.png)
 
 Ta-da!
+
+## Format Filter
+
+```java
+public class FormatFilter implements Predicate<VkFormat >{
+    private final Function<VkFormat, VkFormatProperties> provider;
+    private final boolean optimal;
+    private final EnumMask<VkFormatFeatureFlags> features;
+    private final Map<VkFormat, VkFormatProperties> cache = new HashMap<>();
+
+    /**
+     * Constructor.
+     * @param provider      Format properties provider
+     * @param boolean       Whether to select optimal or linear tiling features
+     * @param features      Required features
+     */
+    public FormatFilter(Function<VkFormat, VkFormatProperties> provider, boolean optimal, Set<VkFormatFeatureFlags> features) {
+        this.provider = requireNonNull(provider);
+        this.optimal = optimal;
+        this.features = new EnumMask<>(features);
+    }
+    // TODO - enum OPTIMAL, LINEAR, EITHER?
+
+    @Override
+    public boolean test(VkFormat format) {
+        final VkFormatProperties properties = cache.computeIfAbsent(format, provider);
+        final EnumMask<VkFormatFeatureFlags> supported = optimal ? properties.optimalTilingFeatures : properties.linearTilingFeatures;
+        return supported.contains(features);
+    }
+}
+```
+
+```java
+public class DepthStencilAttachment extends AbstractAttachment {
+    /**
+     * Commonly supported image formats for the depth-stencil attachment.
+     */
+    public static final List<VkFormat> IMAGE_FORMATS = List.of(VkFormat.D32_SFLOAT, VkFormat.D32_SFLOAT_S8_UINT, VkFormat.D24_UNORM_S8_UINT);
+
+    /**
+     * Helper.
+     * Selects the image format for a depth-stencil attachment.
+     * @param provider      Format provider
+     * @param formats       Image formats in order of preference
+     * @return Image format
+     * @see #IMAGE_FORMATS
+     */
+    public static VkFormat format(Function<VkFormat, VkFormatProperties> provider, List<VkFormat> formats) {
+        final var filter = new FormatFilter(provider, true, Set.of(VkFormatFeatureFlags.DEPTH_STENCIL_ATTACHMENT));
+        final var selector = new PrioritySelector<>(filter, PrioritySelector.first());
+        return selector.select(formats);
+    }
+}
+```
+
+REF to swapchain recreation for priority selector
 
 ---
 

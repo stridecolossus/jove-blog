@@ -43,12 +43,12 @@ The most common commands are:
 
 The slightly more complicated _face_ command specifies the vertices of a polygon as a tuple of indices delimited by the slash character:
 
-| example                   | polygon components						|
-| -------                   | ------------------						|
-| f 1 2 3                   | vertex only								|
-| f 1/2 3/4 5/6             | vertex and texture coordinates			|
-| f 1//2 3//4 5//6          | vertex and normal							|
-| f 1/2/3 4/5/6 7/8/9       | vertex, normal and texture coordinates	|
+| example                   | polygon components                        |
+| -------                   | ------------------                        |
+| f 1 2 3                   | vertex only                                |
+| f 1/2 3/4 5/6             | vertex and texture coordinates            |
+| f 1//2 3//4 5//6          | vertex and normal                            |
+| f 1/2/3 4/5/6 7/8/9       | vertex, texture coordinate, and normal    |
 
 Note that component indices start at __one__ and can be negative to index from the end of the list.
 
@@ -130,9 +130,9 @@ The class outline for the loader comprises the transient data model and OBJ comm
 
 ```java
 public class ObjectModelLoader {
-	private final Pattern tokenize = Pattern.compile("\\s+");
-	private final Map<String, Parser> parsers = new HashMap<>();
-	private final ObjectModel model = new ObjectModel();
+    private final Pattern tokenize = Pattern.compile("\\s+");
+    private final Map<String, Parser> parsers = new HashMap<>();
+    private final ObjectModel model = new ObjectModel();
 }
 ```
 
@@ -140,21 +140,21 @@ The loader applies the above logic and delegates to a local method to parse each
 
 ```java
 public List<IndexedMesh> load(Reader input) throws IOException {
-	var reader = new LineNumberReader(input);
-	try(reader) {
-		reader
-			.lines()
-			.map(ObjectModelLoader::clean)
-			.map(String::trim)
-			.filter(Predicate.not(String::isEmpty))
-			.forEach(this::parse);
-	}
-	catch(RuntimeException e) {
-		...
-	}
+    var reader = new LineNumberReader(input);
+    try(reader) {
+        reader
+            .lines()
+            .map(ObjectModelLoader::clean)
+            .map(String::trim)
+            .filter(Predicate.not(String::isEmpty))
+            .forEach(this::parse);
+    }
+    catch(RuntimeException e) {
+        ...
+    }
 
-	// Build model
-	return model.build();
+    // Build model
+    return model.build();
 }
 ```
 
@@ -162,13 +162,13 @@ Where the `clean` method strips comments from each line:
 
 ```java
 private static String clean(String line) {
-	int index = line.indexOf('#');
-	if(index >= 0) {
-		return line.substring(0, index);
-	}
-	else {
-		return line;
-	}
+    int index = line.indexOf('#');
+    if(index >= 0) {
+        return line.substring(0, index);
+    }
+    else {
+        return line;
+    }
 }
 ```
 
@@ -176,20 +176,20 @@ In the parse method each line is tokenized and then delegated to a _parser_ for 
 
 ```java
 private void parse(String line) {
-	// Tokenize line
-	String[] parts = tokenize.split(line);
+    // Tokenize line
+    String[] parts = tokenize.split(line);
 
-	// Lookup command parser
-	Parser parser = parsers.get(parts[0]);
+    // Lookup command parser
+    Parser parser = parsers.get(parts[0]);
 
-	// Notify unknown commands
-	if(parser == null) {
-		handler.accept(line);
-		return;
-	}
+    // Notify unknown commands
+    if(parser == null) {
+        handler.accept(line);
+        return;
+    }
 
-	// Delegate
-	parser.parse(parts);
+    // Delegate
+    parser.parse(parts);
 }
 ```
 
@@ -197,12 +197,12 @@ A parser is defined as follows:
 
 ```java
 public interface Parser {
-	/**
-	 * Parses the given command.
-	 * @param tokens Command tokens
-	 * @throws NumberFormatException if the data cannot be parsed
-	 */
-	void parse(String[] tokens);
+    /**
+     * Parses the given command.
+     * @param tokens Command tokens
+     * @throws NumberFormatException if the data cannot be parsed
+     */
+    void parse(String[] tokens);
 }
 ```
 
@@ -237,7 +237,7 @@ First an _array constructor_ is implemented on the relevant vertex components, f
 ```java
 protected Tuple(float[] array) {
     if(array.length != SIZE) {
-    	throw new IllegalArgumentException(...);
+        throw new IllegalArgumentException(...);
     }
     x = array[0];
     y = array[1];
@@ -249,9 +249,9 @@ Next the common pattern is abstracted by implementing a new general parser for v
 
 ```java
 class VertexComponentParser<T extends Bufferable> implements Parser {
-	private final int size;
-	private final Function<float[], T> constructor;
-	private final VertexComponentList<T> list;
+    private final int size;
+    private final Function<float[], T> constructor;
+    private final VertexComponentList<T> list;
 }
 ```
 
@@ -273,17 +273,17 @@ The parse method follows the steps outlined above:
 
 ```java
 public void parse(String[] tokens) {
-	// Parse array
-	float[] array = new float[size];
-	for(int n = 0; n < size; ++n) {
-		array[n] = Float.parseFloat(tokens[n + 1]);
-	}
+    // Parse array
+    float[] array = new float[size];
+    for(int n = 0; n < size; ++n) {
+        array[n] = Float.parseFloat(tokens[n + 1]);
+    }
 
-	// Construct object from array
-	final T value = constructor.apply(array);
+    // Construct object from array
+    final T value = constructor.apply(array);
 
-	// Add to model
-	list.add(value);
+    // Add to model
+    list.add(value);
 }
 ```
 
@@ -314,7 +314,7 @@ Each vertex is a slash-delimited tuple of indices into the vertex data:
 ```java
 String[] components = tokens[n + 1].split("/");
 if((parts.length < 1) || (parts.length > 3)) {
-	throw new IllegalArgumentException();
+    throw new IllegalArgumentException();
 }
 ```
 
@@ -338,8 +338,8 @@ The optional normal is the last component:
 
 ```java
 if(components.length == 3) {
-	Normal normal = parse(components[2], model.normals());
-	vertex.add(normal);
+    Normal normal = parse(components[2], model.normals());
+    vertex.add(normal);
 }
 ```
 
@@ -347,8 +347,8 @@ And the optional texture coordinate is the middle component:
 
 ```java
 if((components.length > 1) && !components[1].isEmpty()) {
-	Coordinate coordinate = parse(components[1], model.coordinates());
-	vertex.add(coordinate);
+    Coordinate coordinate = parse(components[1], model.coordinates());
+    vertex.add(coordinate);
 }
 ```
 
@@ -358,9 +358,9 @@ The OBJ builder constructs the JOVE model(s) from the transient data:
 
 ```java
 public class ObjectModel {
-	...
-	private final List<Mesh> meshes = new ArrayList<>();
-	private Mesh current;
+    ...
+    private final List<Mesh> meshes = new ArrayList<>();
+    private Mesh current;
 }
 ```
 
@@ -368,24 +368,24 @@ The `start` method initialises the model layout according to the component data:
 
 ```java
 public void start() {
-	// Ignore leading group commands
-	if(positions.isEmpty()) {
-		return;
-	}
+    // Ignore leading group commands
+    if(positions.isEmpty()) {
+        return;
+    }
 
-	// Determine model layout
-	var layout = new ArrayList<>();
-	layout.add(Point.LAYOUT);
-	if(!normals.isEmpty()) {
-		layout.add(Normal.LAYOUT);
-	}
-	if(!coordinates().isEmpty()) {
-		layout.add(Coordinate2D.LAYOUT);
-	}
+    // Determine model layout
+    var layout = new ArrayList<>();
+    layout.add(Point.LAYOUT);
+    if(!normals.isEmpty()) {
+        layout.add(Normal.LAYOUT);
+    }
+    if(!coordinates().isEmpty()) {
+        layout.add(Coordinate2D.LAYOUT);
+    }
 
-	// Start model
-	current = new Mesh(layout.toArray(Layout[]::new));
-	meshes.add(current);
+    // Start model
+    current = new Mesh(layout.toArray(Layout[]::new));
+    meshes.add(current);
 }
 ```
 
@@ -436,15 +436,15 @@ public class IndexedMesh extends MutableMesh {
 
     public IndexedMesh add(int index) {
         if((index < 0) || (index >= super.count())) {
-        	throw new IndexOutOfBoundsException();
+            throw new IndexOutOfBoundsException();
         }
         indices.add(index);
         return this;
     }
     
-	public Optional<Index> index() {
-		return Optional.of(new DefaultIndex());
-	}
+    public Optional<Index> index() {
+        return Optional.of(new DefaultIndex());
+    }
 }
 ```
 
@@ -452,15 +452,15 @@ The index buffer is generated in a similar fashion to the vertex buffer:
 
 ```java
 private static class DefaultIndex implements MeshData {
-	public int length() {
-		return indices.size() * Integer.BYTES;
-	}
+    public int length() {
+        return indices.size() * Integer.BYTES;
+    }
 
-	public void buffer(ByteBuffer buffer) {
-		for(int n : indices) {
-			buffer.putInt(n);
-		}
-	}
+    public void buffer(ByteBuffer buffer) {
+        for(int n : indices) {
+            buffer.putInt(n);
+        }
+    }
 }
 ```
 
@@ -468,7 +468,7 @@ For the OBJ model a second specialisation performs vertex de-duplication:
 
 ```java
 class RemoveDuplicateMesh extends IndexedMesh {
-	private final Map<Vertex, Integer> map = new HashMap<>();
+    private final Map<Vertex, Integer> map = new HashMap<>();
 }
 ```
 

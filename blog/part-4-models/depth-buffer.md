@@ -33,23 +33,23 @@ A _normal_ is a unit-vector:
 
 ```java
 public class Normal extends Vector {
-	public static final Layout LAYOUT = new Layout(SIZE, Type.NORMALIZED, true, Float.BYTES);
+    public static final Layout LAYOUT = new Layout(SIZE, Type.NORMALIZED, true, Float.BYTES);
 
-	public Normal(Vector vec) {
-		super(normalize(vec));
-	}
-	
-	public final float magnitude() {
-		return 1;
-	}
-	
-	public Normal invert() {
-		return new Normal(super.invert());
-	}
-	
-	public final Normal normalize() {
-		return this;
-	}
+    public Normal(Vector vec) {
+        super(normalize(vec));
+    }
+    
+    public final float magnitude() {
+        return 1;
+    }
+    
+    public Normal invert() {
+        return new Normal(super.invert());
+    }
+    
+    public final Normal normalize() {
+        return this;
+    }
 }
 ```
 
@@ -62,7 +62,7 @@ public final class Axis extends Normal {
         Y = new Axis(1),
         Z = new Axis(2);
 
-	private final int index;
+    private final int index;
 }
 ```
 
@@ -70,13 +70,13 @@ The vector of each axis is initialised in the constructor:
 
 ```java
 private Axis(int ordinal) {
-	var array = new float[Vector.SIZE];
-	array[ordinal] = 1;
+    var array = new float[Vector.SIZE];
+    array[ordinal] = 1;
 
-	Vector vector = new Vector(array);
-	super(vector);
-	this.ordinal = ordinal;
-	this.invert = new Normal(vector.invert());
+    Vector vector = new Vector(array);
+    super(vector);
+    this.ordinal = ordinal;
+    this.invert = new Normal(vector.invert());
 }
 ```
 
@@ -95,15 +95,7 @@ public Matrix rotation(float angle) {
 }
 ```
 
-Note that this code switches on the `index` of the axis, this works fine for now but may be replaced later by an internal enumeration.
-
-The purpose of these changes are:
-
-1. The intent of code using the new types is now more expressive and type-safe, e.g. classes that _require_ a unit-vector can now enforce the `Normal` type explicitly.
-
-2. Reduces the reliance on documented assumptions and defensive checks to ensure vectors are normalised, e.g. when generating rotation matrices.
-
-3. The overhead of re-normalising is trivial where an already normalized vector is referenced as the base `Vector` type.
+The intent of code using the new types is now more expressive and type-safe, with less reliance on documented assumptions or defensive checks.
 
 ## Camera Model
 
@@ -208,7 +200,7 @@ public static Vector between(Point start, Point end) {
 
 Note that this camera model is subject to _gimbal locking_ if the direction becomes the same as the _up_ axis.
 
-Note that the view transform `matrix` is cleared in the various mutator methods (not shown) when any of the camera properties are modified and is generated on demand:
+The view transform `matrix` is cleared in the various mutator methods (not shown) when any of the camera properties are modified and is generated on demand:
 
 ```java
 public Matrix matrix() {
@@ -247,18 +239,18 @@ The draw command is different for an indexed model, therefore we take the opport
 
 ```java
 public record DrawCommand(...) implements Command {
-	/**
-	 * Constructor.
-	 * @param vertexCount			Number of vertices
-	 * @param instanceCount			Number of instances
-	 * @param firstVertex			First vertex
-	 * @param firstInstance			First instance
-	 * @param firstIndex			Optional starting index
-	 * @param library			Drawing library
-	 */
-	public DrawCommand {
-		...
-	}
+    /**
+     * Constructor.
+     * @param vertexCount            Number of vertices
+     * @param instanceCount            Number of instances
+     * @param firstVertex            First vertex
+     * @param firstInstance            First instance
+     * @param firstIndex            Optional starting index
+     * @param library            Drawing library
+     */
+    public DrawCommand {
+        ...
+    }
 }
 ```
 
@@ -266,12 +258,12 @@ The new class selects the appropriate command variant:
 
 ```java
 public void execute(Buffer buffer) {
-	if(firstIndex == null) {
-		library.vkCmdDraw(buffer, vertexCount, instanceCount, firstVertex, firstInstance);
-	}
-	else {
-		library.vkCmdDrawIndexed(buffer, vertexCount, instanceCount, firstIndex, firstVertex, firstInstance);
-	}
+    if(firstIndex == null) {
+        library.vkCmdDraw(buffer, vertexCount, instanceCount, firstVertex, firstInstance);
+    }
+    else {
+        library.vkCmdDrawIndexed(buffer, vertexCount, instanceCount, firstIndex, firstVertex, firstInstance);
+    }
 }
 ```
 
@@ -291,14 +283,14 @@ Finally a further helper is implemented to create a draw command for a given mes
 
 ```java
 public static DrawCommand of(Mesh mesh, LogicalDevice device) {
-	var draw = new Builder();
-	draw.vertexCount(mesh.count());
+    var draw = new Builder();
+    draw.vertexCount(mesh.count());
 
-	if(mesh.index().isPresent()) {
-		draw.indexed();
-	}
+    if(mesh.index().isPresent()) {
+        draw.indexed();
+    }
 
-	return draw.build(device);
+    return draw.build(device);
 }
 ```
 
@@ -318,9 +310,7 @@ The existing view-transform code is replaced with a camera:
 class CameraSetup {
     @Bean
     static Camera camera() {
-        Camera camera = new Camera();
-        camera.move(new Point(0, -0.5f, -2));
-        return camera;
+        return new Camera();
     }
 }
 ```
@@ -418,9 +408,9 @@ The chalet model is orientated with the viewer looking down from above, therefor
 ```java
 @Bean
 static Matrix modelmatrix() {
-    final Matrix tilt = new AxisAngle(Axis.X, toRadians(-90)).matrix();
-    final Matrix rotation = new AxisAngle(Axis.Y, toRadians(120)).matrix();
-    final Matrix down = Matrix.translation(new Vector(0, -0.25f, 0));
+    Matrix tilt = new AxisAngle(Axis.X, toRadians(-90)).matrix();
+    Matrix rotation = new AxisAngle(Axis.Y, toRadians(120)).matrix();
+    Matrix down = Matrix.translation(new Vector(0, -0.25f, 0));
     return down.multiply(rotation.multiply(tilt));
 }
 ```
@@ -433,7 +423,7 @@ Where:
 
 * And 'down' essentially moves the camera slightly above the 'ground' level.
 
-And model matrix is combined with the camera and projection matrices and written to shader:
+The model matrix is combined with the camera and projection matrices and written to the shader:
 
 ```java
 @Bean
@@ -457,13 +447,13 @@ The upside-down texture is due to the fact that OBJ texture coordinates (and Ope
 
 The texture coordinates _could_ be fiddled by one of the following options:
 
-* Flip the vertical texture component in the vertex shader.
+* Flip the vertical texture component in the vertex shader (nasty).
 
-* Flip the image once using an image editing package - just adds an extra manual step.
+* Flip the image once using an image editing package (just adds more manual work).
 
-* Invert the image programmatically at load-time - makes loading slower.
+* Invert the image programmatically at load-time (makes loading slower).
 
-However none of these resolve the actual root problem, a better solution is to perform the flip _once_ when the OBJ model is constructed off-line.
+None of these actaully resolve the root problem, a better solution is to perform the flip _once_ when the OBJ model is constructed off-line.
 
 The following adapter flips the vertical texture coordinate:
 
@@ -508,7 +498,7 @@ public class DepthStencilStage extends AbstractPipelineBuilder<VkPipelineDepthSt
 }
 ```
 
-The depth test uses the _depth buffer_ which is a special attachment that records the distance of each rendered fragment, and discards subsequent fragments that are hidden.
+The depth test uses the _depth buffer_ which is a special attachment that records the distance of each rendered fragment, and discards subsequent fragments that are obscured.
 
 Since we are now dealing with multiple types of attachments the existing framework needs to be revised to support both.  Additionally in the previous demos the clear value for the colour attachments was hard-coded, with the addition of the depth buffer this functionality now needs to be properly implemented.
 
@@ -789,7 +779,9 @@ info.clearValueCount = clear.size();
 info.pClearValues = StructureCollector.pointer(clear, new VkClearValue(), ClearValue::populate);
 ```
 
-Introducing clear values should have been easy, however there was a nasty surprise when the depth-stencil was added to the demo, with JNA throwing the infamous `Invalid memory access` error.  Eventually we realised that `VkClearValue` and `VkClearColorValue` are in fact __unions__ and not structures.  Vulkan is expecting __either__ a colour array __or__ a floating-point depth, whereas currently the code sends both in all cases (probably resulting in some sort of structure size or alignment problem).
+Introducing clear values should have been easy, however there was a nasty surprise when the depth-stencil was added to the demo, with JNA throwing the infamous `Invalid memory access` error.
+
+After some considerable time we eventually realised that `VkClearValue` and `VkClearColorValue` are in fact __unions__ and not structures.  Vulkan is expecting __either__ a colour array __or__ a floating-point depth, whereas currently the code sends both in all cases (probably resulting in some sort of array length or alignment violation).
 
 > Presumably the temporary hard-coded bodge only worked by luck because the code generator treated unions as a plain structures, and the properties for a colour attachment happen to be the first field in each object, i.e. the `color` and `float32` properties.
 
@@ -840,7 +832,7 @@ public static AttachmentDescription depth() {
 
 Notes:
 
-* The format of the depth buffer is temporarily hard-coded to `D32_SFLOAT` which is commonly available on most Vulkan implementations.
+* The format of the depth buffer is temporarily hard-coded to `D32_SFLOAT` which is generally available on all Vulkan implementations.
 
 * The _store_ operation is left as the `DONT_CARE` default.
 
@@ -855,7 +847,7 @@ Subpass subpass = new Subpass()
     ...
 ```
 
-And the view of the depth buffer image is also passed to the `create` method of the framebuffers along with colour attachment.
+And the view of the depth buffer image is also passed to the `create` method of the framebuffers along with the colour attachments.
 
 Finally the clear values for the demo are configured:
 
@@ -878,6 +870,10 @@ Ta-da!
 
 ## Format Filter
 
+A final enhancement is to provide support for selection of the image format of the depth-stencil rather than hard-coding.
+
+The following utility tests a given image format against those supported by the hardware:
+
 ```java
 public class FormatFilter implements Predicate<VkFormat >{
     private final Function<VkFormat, VkFormatProperties> provider;
@@ -885,20 +881,6 @@ public class FormatFilter implements Predicate<VkFormat >{
     private final EnumMask<VkFormatFeatureFlags> features;
     private final Map<VkFormat, VkFormatProperties> cache = new HashMap<>();
 
-    /**
-     * Constructor.
-     * @param provider      Format properties provider
-     * @param boolean       Whether to select optimal or linear tiling features
-     * @param features      Required features
-     */
-    public FormatFilter(Function<VkFormat, VkFormatProperties> provider, boolean optimal, Set<VkFormatFeatureFlags> features) {
-        this.provider = requireNonNull(provider);
-        this.optimal = optimal;
-        this.features = new EnumMask<>(features);
-    }
-    // TODO - enum OPTIMAL, LINEAR, EITHER?
-
-    @Override
     public boolean test(VkFormat format) {
         final VkFormatProperties properties = cache.computeIfAbsent(format, provider);
         final EnumMask<VkFormatFeatureFlags> supported = optimal ? properties.optimalTilingFeatures : properties.linearTilingFeatures;
@@ -907,30 +889,47 @@ public class FormatFilter implements Predicate<VkFormat >{
 }
 ```
 
+Where:
+
+* The `provider` looks up the properties of a given image format (see below).
+
+* The `optimal` flag specifies whether to test the _optimal_ or _linear_ tiling features of the format.
+
+* And `features` configures the features of the format to be included in the test.
+
+This is used by the following helper in the depth-stencil attachment class to select the best available image format:
+
+```java
+public static VkFormat format(Function<VkFormat, VkFormatProperties> provider, List<VkFormat> formats) {
+    var filter = new FormatFilter(provider, true, Set.of(VkFormatFeatureFlags.DEPTH_STENCIL_ATTACHMENT));
+    var selector = new PrioritySelector<>(filter, PrioritySelector.first());
+    return selector.select(formats);
+}
+```
+
+The `PrioritySelector` is another utility (covered in a later chapter) that applies the filter to a list of candidates ordered by preference, falling back to the _first_ in the list if none match.
+
+Finally the commonly used depth-stencil formats are defined by the following convenience constant:
+
 ```java
 public class DepthStencilAttachment extends AbstractAttachment {
     /**
      * Commonly supported image formats for the depth-stencil attachment.
      */
-    public static final List<VkFormat> IMAGE_FORMATS = List.of(VkFormat.D32_SFLOAT, VkFormat.D32_SFLOAT_S8_UINT, VkFormat.D24_UNORM_S8_UINT);
-
-    /**
-     * Helper.
-     * Selects the image format for a depth-stencil attachment.
-     * @param provider      Format provider
-     * @param formats       Image formats in order of preference
-     * @return Image format
-     * @see #IMAGE_FORMATS
-     */
-    public static VkFormat format(Function<VkFormat, VkFormatProperties> provider, List<VkFormat> formats) {
-        final var filter = new FormatFilter(provider, true, Set.of(VkFormatFeatureFlags.DEPTH_STENCIL_ATTACHMENT));
-        final var selector = new PrioritySelector<>(filter, PrioritySelector.first());
-        return selector.select(formats);
-    }
+    public static final List<VkFormat> IMAGE_FORMATS = List.of(D32_SFLOAT, D32_SFLOAT_S8_UINT, D24_UNORM_S8_UINT);
 }
 ```
 
-REF to swapchain recreation for priority selector
+The format of the depth buffer image can now be determined programatically using the new helper rather than hard-coding:
+
+```java
+static DepthStencilAttachment depth(PhysicalDevice device, Allocator allocator) {
+    VkFormat format = DepthStencilAttachment.format(device::properties, DepthStencilAttachment.IMAGE_FORMATS);
+    return new DepthStencilAttachment(format, AttachmentDescription.depth(), allocator);
+}
+```
+
+Nice.
 
 ---
 

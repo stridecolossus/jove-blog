@@ -1,4 +1,4 @@
-    ---
+---
 title: Swapchain Recreation
 ---
 
@@ -24,13 +24,13 @@ Note that swapchain recreation also encompasses rebuilding the attachment views 
 
 This requirement implies the following:
 
-* Refactoring of the `acquire` and `present` swapchain methods to test whether the swapchain has become invalid.
+* Refactoring of the swapchain to test whether the swapchain has become invalid.
 
 * A new exception thrown by these methods such that the swapchain can be recreated.
 
 * Some sort of 'holder' approach for the various components that can be recreated.
 
-Most Vulkan device drivers _should_ generate errors when the swapchain becomes invalid, but this is not guaranteed.  It is recommended to also explicitly check for changes to the window, i.e. using GLFW event callbacks.
+Most Vulkan device drivers _should_ generate errors when the swapchain becomes invalid, but this is not guaranteed.  It is recommended to also explicitly check for changes to the window (i.e. using GLFW event callbacks), therefore event handlers will also be implemented to explicitly handle resized and minimised windows.
 
 Additionally the current implementation of the swapchain and rendering surface has several problems that will be addressed as part of this refactoring work:
 
@@ -109,7 +109,7 @@ public class Swapchain extends VulkanObject {
 }
 ```
 
-The swapchain API methods can return _multiple_ success codes, indicating whether the swapchain has become invalid.  Since all Vulkan API methods that return `VkResult` are checked against `SUCCESS` in the library proxy, the swapchain API is refactored to return the underlying _integer_ success code, circumventing the usual validation logic:
+The `acquire` and `present` of the swapchain return _multiple_ success codes, indicating whether the swapchain has become invalid.  Since all Vulkan API methods that return `VkResult` are checked against `SUCCESS` in the library proxy, the swapchain API is refactored to return the underlying _integer_ success code, circumventing the usual validation logic:
 
 ```java
 public interface Library {
@@ -160,41 +160,25 @@ public static class Builder {
     private final VkSwapchainCreateInfoKHR info = new VkSwapchainCreateInfoKHR();
     private final Set<VkSwapchainCreateFlagKHR> flags = new HashSet<>();
     private final Set<VkImageUsageFlag> usage = new HashSet<>();
-    private ColourClearValue clear;
-
-    public Builder() {
-        init();
-        usage(VkImageUsageFlag.COLOR_ATTACHMENT);
-    }
 }
 ```
 
-The swapchain properties are initialised to sensible defaults _once_ by the `init` method:
+The swapchain properties are initialised to sensible defaults _once_ in the constructor:
 
 ```java
-private void init() {
-    info.imageFormat = VkFormat.UNDEFINED;
-    info.preTransform = VkSurfaceTransformFlagKHR.IDENTITY_KHR;
+public Builder() {
+    info.imageFormat = VkFormat.B8G8R8A8_UNORM;
+    info.imageColorSpace = VkColorSpaceKHR.SRGB_NONLINEAR_KHR;
+    info.preTransform = new EnumMask<>(VkSurfaceTransformFlagsKHR.IDENTITY_KHR);
     info.imageArrayLayers = 1;
-    info.compositeAlpha = VkCompositeAlphaFlagKHR.OPAQUE;
+    info.compositeAlpha = new EnumMask<>(VkCompositeAlphaFlagsKHR.OPAQUE_KHR);
     info.imageSharingMode = VkSharingMode.EXCLUSIVE;
     info.presentMode = DEFAULT_PRESENTATION_MODE;
     info.clipped = true;
 }
 ```
 
-And properties dependant on the surface can be initialised as required by a new method:
-
-```java
-public Builder init(VkSurfaceCapabilitiesKHR capabilities) {
-    info.minImageCount = capabilities.minImageCount;
-    info.preTransform = capabilities.currentTransform;
-    info.imageExtent = capabilities.currentExtent;
-    return this;
-}
-```
-
-This ensures that all swapchain properties are initialised to valid values _before_ any configuration is applied.  The application can then override the properties as required whenever the swapchain is recreated, i.e. the builder can be initialised _once_ and reused.
+This ensures that all swapchain properties are initialised to valid values _before_ any configuration is applied.  The application can then override the properties as required whenever the swapchain is recreated, i.e. the builder is initialised _once_ and reused.
 
 ---
 
@@ -277,13 +261,13 @@ The presentation mode is selected from a prioritised list of candidates, filtere
 
 ```java
 public class PresentationModeSwapchainConfiguration implements SwapchainConfiguration {
-	private final List<VkPresentModeKHR> modes;
+    private final List<VkPresentModeKHR> modes;
 
-	public void configure(Swapchain.Builder builder, Properties properties) {
-		List<VkPresentModeKHR> available = properties.modes();
-		...
-		builder.presentation(mode);
-	}
+    public void configure(Swapchain.Builder builder, Properties properties) {
+        List<VkPresentModeKHR> available = properties.modes();
+        ...
+        builder.presentation(mode);
+    }
 }
 ```
 
@@ -291,16 +275,16 @@ Since there are several use-cases that repeat this pattern of selecting from a l
 
 ```java
 public class PrioritySelector<T> {
-	private final Predicate<T> filter;
-	private final Function<List<T>, T> fallback;
+    private final Predicate<T> filter;
+    private final Function<List<T>, T> fallback;
 
-	public PrioritySelector(Predicate<T> filter, Function<List<T>, T> fallback) {
-		...
-	}
+    public PrioritySelector(Predicate<T> filter, Function<List<T>, T> fallback) {
+        ...
+    }
 
-	public PrioritySelector(Predicate<T> filter, T fallback) {
-		this(filter, _ -> fallback);
-	}
+    public PrioritySelector(Predicate<T> filter, T fallback) {
+        this(filter, _ -> fallback);
+    }
 }
 ```
 
@@ -308,12 +292,12 @@ The selection logic is then implemented as follows:
 
 ```java
 public T select(List<T> candidates) {
-	return candidates
-		.stream()
-		.filter(filter)
-		.findAny()
-		.or(() -> Optional.ofNullable(fallback.apply(candidates)))
-		.orElseThrow();
+    return candidates
+        .stream()
+        .filter(filter)
+        .findAny()
+        .or(() -> Optional.ofNullable(fallback.apply(candidates)))
+        .orElseThrow();
 }
 ```
 
@@ -321,10 +305,10 @@ The presentation mode can now be selected and applied using the new utility:
 
 ```java
 public void configure(Swapchain.Builder builder, Properties properties) {
-	List<VkPresentModeKHR> available = properties.modes();
-	var selector = new PrioritySelector<>(available::contains, Swapchain.DEFAULT_PRESENTATION_MODE);
-	VkPresentModeKHR mode = selector.select(modes);
-	builder.presentation(mode);
+    List<VkPresentModeKHR> available = properties.modes();
+    var selector = new PrioritySelector<>(available::contains, Swapchain.DEFAULT_PRESENTATION_MODE);
+    VkPresentModeKHR mode = selector.select(modes);
+    builder.presentation(mode);
 }
 ```
 
@@ -336,14 +320,14 @@ Selecting the surface format of the swapchain also uses the new selector utility
 
 ```java
 public class SurfaceFormatSwapchainConfiguration implements SwapchainConfiguration {
-	private final SurfaceFormatWrapper format;
+    private final SurfaceFormatWrapper format;
 
-	public void configure(Builder builder, Properties properties) {
-		List<VkSurfaceFormatKHR> formats = properties.formats();
-		var selector = new PrioritySelector<VkSurfaceFormatKHR>(format::equals, first());
-		VkSurfaceFormatKHR selected = selector.select(formats);
-		builder.format(selected);
-	}
+    public void configure(Builder builder, Properties properties) {
+        List<VkSurfaceFormatKHR> formats = properties.formats();
+        var selector = new PrioritySelector<VkSurfaceFormatKHR>(format::equals, first());
+        VkSurfaceFormatKHR selected = selector.select(formats);
+        builder.format(selected);
+    }
 }
 ```
 
@@ -370,7 +354,7 @@ And `first` is a helper that selects the first candidate as the fallback:
 
 ```java
 public static <T> Function<List<T>, T> first() {
-	return List::getFirst;
+    return List::getFirst;
 }
 ```
 
@@ -543,18 +527,18 @@ protected List<View> views(LogicalDevice device, Dimensions extents) {
 
 Lastly the framebuffers are recreated given the newly rebuilt image views of the attachments.
 
-Another new component is introduced to manage a set of framebuffers (equivalent to the swapchain manager):
+Another new component is introduced to manage the set of framebuffers:
 
 ```java
 public class Framebuffer extends VulkanObject {
-	public static class Factory implements TransientObject {
-		private final RenderPass pass;
-		private final List<Framebuffer> framebuffers = new ArrayList<>();
-	
-		public Framebuffer framebuffer(int index) {
-			return framebuffers.get(index);
-		}
-	}
+    public static class Factory implements TransientObject {
+        private final RenderPass pass;
+        private final List<Framebuffer> framebuffers = new ArrayList<>();
+    
+        public Framebuffer framebuffer(int index) {
+            return framebuffers.get(index);
+        }
+    }
 }
 ```
 
@@ -562,22 +546,22 @@ The framebuffers are deleted and recreated on demand:
 
 ```java
 public void build(Swapchain swapchain) {
-	destroy();
-	create(swapchain);
+    destroy();
+    create(swapchain);
 }
 ```
 
-Delegating to the following code to rebuild a framebuffer for each colour attachment of the swapchain:
+A framebuffer is created for each swapchain image:
 
 ```java
 private void create(Swapchain swapchain) {
-	int count = swapchain.attachments();
-	Dimensions extents = swapchain.extents();
-	for(int n = 0; n < count; ++n) {
-		List<View> views = views(n);
-		Framebuffer buffer = create(views, extents);
-		framebuffers.add(buffer);
-	}
+    int count = swapchain.attachments();
+    Dimensions extents = swapchain.extents();
+    for(int n = 0; n < count; ++n) {
+        List<View> views = views(n);
+        Framebuffer buffer = create(views, extents);
+        framebuffers.add(buffer);
+    }
 }
 ```
 
@@ -585,11 +569,11 @@ Where the image view(s) for each attachment in the render pass are aggregated by
 
 ```java
 private List<View> views(int index) {
-	return pass
-		.attachments()
-		.stream()
-		.map(attachment -> attachment.view(index))
-		.toList();
+    return pass
+        .attachments()
+        .stream()
+        .map(attachment -> attachment.view(index))
+        .toList();
 }
 ```
 
@@ -646,19 +630,19 @@ And finally the render task checks for an invalidated swapchain:
 
 ```java
 public class RenderTask implements Runnable, TransientObject {
-	private final SwapchainManager manager;
-	private final Framebuffer.Factory factory;
-	...
+    private final SwapchainManager manager;
+    private final Framebuffer.Factory factory;
+    ...
 
-	@Override
-	public void run() {
-		try {
-			render();
-		}
-		catch(Invalidated e) {
-			recreate();
-		}
-	}
+    @Override
+    public void run() {
+        try {
+            render();
+        }
+        catch(Invalidated e) {
+            recreate();
+        }
+    }
 }
 ```
 

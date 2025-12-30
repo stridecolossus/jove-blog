@@ -429,6 +429,7 @@ Next a specialised implementation is introduced for a mesh with an index:
 ```java
 public class IndexedMesh extends MutableMesh {
     private final List<Integer> indices = new ArrayList<>();
+    private boolean restart;
     
     public int count() {
         return indices.size();
@@ -445,6 +446,16 @@ public class IndexedMesh extends MutableMesh {
     public Optional<Index> index() {
         return Optional.of(new DefaultIndex());
     }
+}
+```
+
+Although unused in the current demo, an index can be _restarted_ using a special case value (as an alternative to degenerate triangles):
+
+```java
+public IndexedMesh restart() {
+    indices.add(-1);
+    restart = true;
+    return this;
 }
 ```
 
@@ -582,6 +593,108 @@ public static VkBufferUsageFlag map(VkDescriptorType type) {
     };
 }
 ```
+
+### Index Data Type
+
+The `VkIndexType` specifies the size of the vertex indices of a given index (32-bits by default):
+
+```java
+private class IntegerIndex implements Index {
+    public final int length() {
+        return indices.size() * bytes();
+    }
+
+    protected int bytes() {
+        return Integer.BYTES;
+    }
+
+    public void buffer(ByteBuffer buffer) {
+        for(int n : indices) {
+            buffer.putInt(n);
+        }
+    }
+}
+```
+
+A new method on the index determines the smallest integer type required to support a given index:
+
+```java
+public final int minimumElementBytes() {
+    int vertices = IndexedMesh.super.count();
+    if(vertices <= MathsUtility.unsignedMaximum(Byte.SIZE)) {
+        return Byte.BYTES;
+    }
+    else
+    if(vertices <= MathsUtility.unsignedMaximum(Short.SIZE)) {
+        return Short.BYTES;
+    }
+    else {
+        return Integer.BYTES;
+    }
+}
+```
+
+Where the `unsignedMaximum` utility calculates the largest number of vertices that can be indexed by a given type:
+
+```java
+public static long unsignedMaximum(int bits) {
+    return (1L << bits) - 1;
+}
+```
+
+An application can then select a smaller index type via the following adapter:
+
+```java
+public Index index(int bytes) {
+    int min = minimumElementBytes();
+    if(bytes < min) {
+        throw new IllegalArgumentException(...);
+    }
+
+    return switch(bytes) {
+        case Byte.BYTES     -> new ByteIndex();
+        case Short.BYTES    -> new ShortIndex();
+        case Integer.BYTES  -> this;
+        default             -> throw new IllegalArgumentException(...);
+    };
+}
+```
+
+Where 16-bit indices are represented by `short` values:
+
+```java
+class ShortIndex extends IntegerIndex {
+    protected int bytes() {
+        return Short.BYTES;
+    }
+
+    public void buffer(ByteBuffer buffer) {
+        for(int n : indices) {
+            buffer.putShort((short) n);
+        }
+    }
+}
+```
+
+And similarly for an index with less than 256 vertices:
+
+```java
+class ByteIndex extends IntegerIndex {
+    protected int bytes() {
+        return Byte.BYTES;
+    }
+
+    public void buffer(ByteBuffer buffer) {
+        for(int n : indices) {
+            buffer.put((byte) n);
+        }
+    }
+}
+```
+
+Validation is added to the index buffer class (not shown) to verify that a given index is supported by the hardware.
+
+The index for the chalet model is quite large so the demo uses the default 32-bit indices.
 
 ### Model Persistence
 

@@ -140,7 +140,7 @@ public class Camera {
 
 Where:
 
-* `right` is the local horizontal axis of the camera (also used to the strafe the camera).
+* `right` is the local horizontal axis of the camera (also used to strafe the camera).
 
 * and `y` is the vertical axis (or the _actual_ up direction).
 
@@ -154,7 +154,7 @@ public Camera direction(Normal direction) {
 }
 ```
 
-Delegating to `update` which recalculates the cameras local axes:
+The `update` method recalculates the cameras local axes:
 
 ```java
 private void update() {
@@ -241,12 +241,12 @@ The draw command is different for an indexed model, therefore we take the opport
 public record DrawCommand(...) implements Command {
     /**
      * Constructor.
-     * @param vertexCount            Number of vertices
-     * @param instanceCount            Number of instances
-     * @param firstVertex            First vertex
-     * @param firstInstance            First instance
+     * @param vertexCount           Number of vertices
+     * @param instanceCount         Number of instances
+     * @param firstVertex           First vertex
+     * @param firstInstance         First instance
      * @param firstIndex            Optional starting index
-     * @param library            Drawing library
+     * @param library               Drawing library
      */
     public DrawCommand {
         ...
@@ -421,7 +421,7 @@ Where:
 
 * The _rotation_ spins the model vertically such that the camera is facing the corner of the chalet with the door.
 
-* And 'down' essentially moves the camera slightly above the 'ground' level.
+* And _down_ essentially moves the camera slightly above the 'ground' level.
 
 The model matrix is combined with the camera and projection matrices and written to the shader:
 
@@ -514,7 +514,7 @@ The following are required to support both colour and depth attachments:
 
 * An optional clear value with properties specific to that type of attachment.
 
-Slightly surprisingly there is no separate, equivalent Vulkan object for an 'attachment' as such, instead these properties are essentially used individually by the collaborating objects (the render pass, framebuffers, etc) as required.  It seems logical to aggregate the above into a single, coherent type:
+Slightly surprisingly there is no equivalent Vulkan object for an 'attachment' as such, instead these properties are spread around the collaborating objects (the render pass, framebuffers, etc) as required.  For our purposes it seems logical to aggregate the above into a single, coherent type:
 
 ```java
 public interface Attachment {
@@ -583,8 +583,6 @@ public View view(int index) {
     };
 }
 ```
-
-The synchronisation of the render pass ensures that only one pipeline stage is using the depth-stencil even though the overall rendering process is concurrent.
 
 The image views are destroyed when the attachment is released:
 

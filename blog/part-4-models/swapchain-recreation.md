@@ -14,7 +14,9 @@ title: Swapchain Recreation
 
 ---
 
-TODO - minised -> pause render loop here?
+TODO
+- event handlers for resize and minimise
+- minimised -> pause render loop here?
 
 # Introduction
 
@@ -30,21 +32,17 @@ This requirement implies the following:
 
 * Some sort of 'holder' approach for the various components that can be recreated.
 
-Most Vulkan device drivers _should_ generate errors when the swapchain becomes invalid, but this is not guaranteed.  It is recommended to also explicitly check for changes to the window (i.e. using GLFW event callbacks), therefore event handlers will also be implemented to explicitly handle resized and minimised windows.
+Additionally the current implementation of the swapchain and rendering surface has several problems that will be addressed as part of this refactoring work.
 
-Additionally the current implementation of the swapchain and rendering surface has several problems that will be addressed as part of this refactoring work:
-
-1. The swapchain has several properties that are dependant on the rendering surface, e.g. the presentation mode must be selected from those supported by the hardware.  Some of these properties are currently hard-coded in the demo applications and will be replaced by a new configuration mechanism that ties in with swapchain recreation.
-
-2. Similarly the swapchain class and its companion builder also have complex selection and state validation logic, making these classes brittle to change and difficult to test, e.g. configuration of the number of swapchain images.  Again this logic should be factored out.
-
-3. Due to the fact that we have chosen to use the Vulkan integration in GLFW to instantiate the rendering surface (rather than using Vulkan extensions from the ground up), the surface class is inherently dependant on the Vulkan instance, physical device and the GLFW window.  However the existing code is overly complex and will be refactored to simplify configuration of the swapchain.
+Finally, most Vulkan device drivers _should_ generate errors when the swapchain becomes invalid, but this is not guaranteed.  It is recommended to also explicitly check for changes to the window (i.e. using GLFW event callbacks), therefore event handlers will also be implemented to explicitly handle resized and minimised windows.
 
 ---
 
 # Refactor
 
 ## Surface
+
+Since we have chosen to use the Vulkan integration in GLFW to instantiate the rendering surface (rather than using Vulkan extensions from the ground up), the surface class is inherently dependant on the Vulkan instance, physical device and the GLFW window.  However the existing code is overly complex and will be refactored to simplify configuration of the swapchain.
 
 First the surface class is simplified as follows:
 
@@ -152,6 +150,20 @@ public static void present(Library library, WorkQueue queue, VkPresentInfoKHR in
 ```
 
 ## Swapchain Builder
+
+The swapchain and its companion builder have several properties that are dependant on the rendering surface, for example:
+
+* The presentation mode must be selected from those supported by the hardware.
+
+* The number of swapchain images is constrained by the capabilities of the rendering surface.
+
+This leads to a couple of problems:
+
+1. Many of these properties are currently hard-coded in the demo applications.
+
+2. The logic to configure these properties is spread across the various classes making the code brittle to change and difficult to test.
+
+A new mechanism will be introduced to factor out the configuration logic, this will also tie in with recreation of the swapchain.
 
 The swapchain builder is simplified by removing the dependency on the surface and stripping out any selection logic:
 

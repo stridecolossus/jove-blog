@@ -453,7 +453,7 @@ The texture coordinates _could_ be fiddled by one of the following options:
 
 * Invert the image programmatically at load-time (makes loading slower).
 
-None of these actaully resolve the root problem, a better solution is to perform the flip _once_ when the OBJ model is constructed off-line.
+None of these actually resolve the root problem, a better solution is to perform the flip _once_ when the OBJ model is constructed off-line.
 
 The following adapter flips the vertical texture coordinate:
 
@@ -781,7 +781,7 @@ Introducing clear values should have been easy, however there was a nasty surpri
 
 After some considerable time we eventually realised that `VkClearValue` and `VkClearColorValue` are in fact __unions__ and not structures.  Vulkan is expecting __either__ a colour array __or__ a floating-point depth, whereas currently the code sends both in all cases (probably resulting in some sort of array length or alignment violation).
 
-> Presumably the temporary hard-coded bodge only worked by luck because the code generator treated unions as a plain structures, and the properties for a colour attachment happen to be the first field in each object, i.e. the `color` and `float32` properties.
+> Presumably the temporary hard-coded bodge only worked by luck because the code generator treated unions as a plain structures, and the properties for a colour attachment happen to be the first field in each object.
 
 As far as we can tell this is the __only__ instance of the use of unions in the whole Vulkan API!
 
@@ -880,8 +880,8 @@ public class FormatFilter implements Predicate<VkFormat >{
     private final Map<VkFormat, VkFormatProperties> cache = new HashMap<>();
 
     public boolean test(VkFormat format) {
-        final VkFormatProperties properties = cache.computeIfAbsent(format, provider);
-        final EnumMask<VkFormatFeatureFlags> supported = optimal ? properties.optimalTilingFeatures : properties.linearTilingFeatures;
+        VkFormatProperties properties = cache.computeIfAbsent(format, provider);
+        EnumMask<VkFormatFeatureFlags> supported = optimal ? properties.optimalTilingFeatures : properties.linearTilingFeatures;
         return supported.contains(features);
     }
 }
@@ -891,9 +891,9 @@ Where:
 
 * The `provider` looks up the properties of a given image format (see below).
 
-* The `optimal` flag specifies whether to test the _optimal_ or _linear_ tiling features of the format.
+* The `optimal` flag selects _optimal_ or _linear_ tiling features.
 
-* And `features` configures the features of the format to be included in the test.
+* And `features` configures the format features to be included in the test.
 
 This is used by the following helper in the depth-stencil attachment class to select the best available image format:
 

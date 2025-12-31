@@ -48,7 +48,7 @@ First the surface class is simplified as follows:
 
 * The GLFW window becomes an explicit dependency of the surface.
 
-* The surface handle can now be encapsulated into the revised class (rather than being another responsibility of the user).
+* The surface handle is encapsulated into the revised class (rather than being another responsibility of the user).
 
 * The various methods supporting configuration of the swapchain are removed (to be replaced later).
 
@@ -72,7 +72,7 @@ public class VulkanSurface extends TransientNativeObject {
 }
 ```
 
-The method that tests whether a given device-family supports presentation becomes a simple query:
+The method to test whether a given device-family supports presentation becomes a simple query:
 
 ```java
 public boolean isPresentationSupported(PhysicalDevice device, Family family) {

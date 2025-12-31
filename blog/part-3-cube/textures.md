@@ -960,7 +960,7 @@ VulkanBuffer staging = VulkanBuffer.staging(dev, allocator, image.data());
 And then copied to the texture:
 
 ```java
-new ImageCopyCommand.Builder()
+new ImageTransferCommand.Builder()
     .image(texture)
     .buffer(staging)
     .layout(VkImageLayout.TRANSFER_DST_OPTIMAL)

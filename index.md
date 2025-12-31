@@ -42,6 +42,7 @@ The [Vulkan Object Index](blog/part-1-intro/vulkan-index) links to the relevant 
     - [Model Loader](blog/part-4-models/model-loader)
     - [Depth Buffers](blog/part-4-models/depth-buffer)
     - [Input Devices](blog/part-4-models/input-devices)
+    - [Screenshots](blog/part-4-models/screenshots)
     - [Panama Refactor](blog/part-4-models/panama)
     - [Swapchain Recreation](blog/part-4-models/swapchain-recreation)
     

@@ -256,7 +256,7 @@ var raster = Raster.createInterleavedRaster(
 );
 ```
 
-Note that colour band offsets array which swizzles the BGR format of the Vulkan image to RGB.
+Note the offsets array which swizzles the BGR format of the Vulkan image to RGB.
 
 The colour model and channel layout are as follows:
 
@@ -278,7 +278,7 @@ return new BufferedImage(model, raster, false, null);
 
 A second utility method writes the resultant image to disk:
 
-```
+```java
 public static void write(BufferedImage image, String format, File file) {
     try {
         ImageIO.write(image, format, file);

@@ -41,22 +41,9 @@ The [Vulkan Object Index](blog/part-1-intro/vulkan-index) links to the relevant 
 - Part 4 - Models
     - [Model Loader](blog/part-4-models/model-loader)
     - [Depth Buffers](blog/part-4-models/depth-buffer)
-    - [Input Devices](blog/part-4-models/input-devices)
     - [Screenshots](blog/part-4-models/screenshots)
     - [Panama Refactor](blog/part-4-models/panama)
+    - [Input Devices](blog/part-4-models/input-devices)
     - [Swapchain Recreation](blog/part-4-models/swapchain-recreation)
     
-- Part 5 - Scenes
-	TODO...
-    - [Skybox](blog/part-5-scenes/skybox)
-    - [Terrain Tesselation](blog/part-5-scenes/tesselation)
-    - [Miscellany](blog/part-5-scenes/miscellany)
-	- [Particle System](blog/part-5-scenes/particle-system)
-	...TODO
-
 ---
-
-WIP
-[Screenshots](blog/part-5-terrain/screenshot)
-[Galaxy](blog/part-5-terrain/galaxy)
-

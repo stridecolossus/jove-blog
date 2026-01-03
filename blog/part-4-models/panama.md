@@ -2158,6 +2158,8 @@ VkDeviceQueueCreateInfo - primitive arrays
 
 At this point the FFM-based framework now fully supports the bulk of the requirements for both GLFW and Vulkan, with the addition of some [miscellaneous](#miscellaneous) deferred or edge cases covered at the end of the chapter.
 
+Callback support for GLFW input event handling is covered in the [Input Devices](/jove-blog/blog/part-4-models/input-devices) chapter.
+
 The prototype is discarded and refactoring continues with the existing suite of demo application.
 
 The last major chunk of work is refactoring of the code generator which is covered in the next section.

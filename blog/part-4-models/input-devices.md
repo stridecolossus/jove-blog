@@ -4,20 +4,72 @@ title: Input Devices
 
 ---
 
-## Contents
+# Contents
 
 - [Overview](#overview)
-- [InputEvents](#input-events)
-- [Action Bindings](#action-bindings)
-- [Camera Controller](#camera-controller)
+- [Mouse](#mouse-device)
+- [Keyboard](#keyboard-device)
+- [Summary](#summary)
 
 ---
 
-////////////////////////
+# Overview
+
+This chapter will introduce new functionality to support input event handling and implement a camera controller to better view the chalet model.
+
+This will require the following:
+
+* Support for GLFW event callbacks to be integrated with the new FFM based native layer.
+
+* New JOVE framework code to configure input events and devices.
+
+* Camera controllers.
+
+While we could simply use GLFW directly in our application there are compelling reasons to introduce a layer of abstraction:
+
+* The GLFW API exposes some underlying details (such as window handle pointers) that we would prefer to encapsulate if at all possible.
+
+* Some events are implemented as callback handlers e.g. `MousePositionListener` and others as query functions, e.g. `glfwGetJoystickAxes`.
+
+* Several of the GLFW events are essentially equivalent (e.g. keyboard keys and mouse buttons) but are implemented using different listeners and API calls.
+
+* Traditional event callbacks violate the principle of separation of concerns by mixing application logic and the event handling code.
+
+Therefore a simple abstraction layer will be implemented allowing event handling to be expressed in domain terms rather than GLFW callbacks, window handles, etc.
+
+> Note that this approach is not intended to create a fancy 'pluggable' framework to support other libraries, in any case we are not intending to move away from GLFW any time soon.
+
+The following devices will be supported initially:
+
+* Keyboard.
+
+* Mouse buttons.
+
+* Mouse cursor.
+
+* Mouse wheel.
+
+The first cut will implement support for the keyboard and mouse, with other devices (e.g. joysticks and controllers) and window events (focus, enter/exit, etc) added as required in future chapters.
+
+After a bit of analysis of the various GLFW callbacks the supported events can be reduced to the following categories:
+
+* Button - keyboard and mouse buttons.
+
+* Position - i.e. the mouse pointer.
+
+* Axis - mouse wheel, joystick throttle, etc.
+
+* Boolean - window events.
+
+Button events will be treated as a special case since these are essentially _parameterised_ by an action (press, release) and by modifier keys (control, shift, etc), requiring more complex handling logic compared to the other types of event.
+
+---
+
+# Framework
 
 ## Callbacks
 
-To support callbacks _from_ the native layer (largely for GLFW input devices) the following new JOVE type and companion transformer are introduced:
+To support GLFW callbacks the following new JOVE type and companion transformer are introduced:
 
 ```java
 public interface Callback {
@@ -42,7 +94,7 @@ public Transformer<Callback, MemorySegment> transformer(Class<? extends Callback
 }
 ```
 
-The `Callback` interface itself cannot be declared a `@FunctionalInterface`, therefore the following code validates that a given callback declares a _single_ method:
+The `Callback` itself unfortunately cannot be declared a `@FunctionalInterface` (since it is essentially a _marker_ interface), therefore the following code validates that a given callback declares a _single_ method:
 
 ```java
 private static Method method(Class<? extends Callback> callback) {
@@ -73,302 +125,176 @@ Notes:
 
 * The stub is created using the global arena, otherwise the linker will fail.
 
-* Callback stubs are generated on demand in each invocation of the `marshal` method.  This does not feel right but there is not really any  other way to interpret the FFM upcall API.
+* Callback stubs are generated on demand for each invocation of the `marshal` method.  This does not feel right but there is not really any  other way to interpret the FFM upcall API.
 
-For the moment callbacks are restricted to primitives and `MemorySegment` parameters.  Further analysis and design is required to determine how best to support domain types such as structures.  This might look like a bit of a cop out, but in any case GLFW only requires primitive parameters (except for the window handle which is ignored anyway).  The only other callback is the diagnostic handler which is treated as a special case for now.
+For the moment callbacks are restricted to primitives and `MemorySegment` parameters.  Further analysis and design is required to determine how best to support domain types such as structures.  This might look a bit of a cop out, but GLFW only really requires primitive parameters (except for window handles which are unused anyway).  The only other callback is the diagnostic handler which is treated as a special case for the forseeable future.
 
-The following snippet of the device library illustrates a callback in action:
+## Events
 
-```java
-interface DeviceLibrary {
-	@FunctionalInterface
-	interface MouseListener extends Callback {
-		void event(MemorySegment window, double x, double y);
-	}
-
-	void glfwSetCursorPosCallback(Window window, MouseListener listener);
-
-	void glfwSetScrollCallback(Window window, MouseListener listener);
-}
-```
-
-Which slots transparently into the existing device and event handling framework:
-
-```java
-public class MousePointer extends AbstractWindowDevice<ScreenCoordinate, MouseListener> {
-	protected MouseListener callback(Window window, Consumer<ScreenCoordinate> listener) {
-		return new MouseListener() {
-			public void event(MemorySegment window, double x, double y) {
-				var pos = new ScreenCoordinate((int) x, (int) y);
-				listener.accept(pos);
-			}
-		};
-	}
-
-	protected BiConsumer<Window, MouseListener> method(DeviceLibrary library) {
-		return library::glfwSetCursorPosCallback;
-	}
-}
-```
-
-Finally the callback instance is now encapsulated in the device base-class, ensuring it is not garbage-collected until the listener is _explicitly_ removed by the application.  Therefore the weak map of callbacks in the window class is redundant and can be removed, simplifying the code and reducing inter-dependencies.
-
-/////////////////////
-
-## Overview
-
-
-
-In this chapter we will design a framework for input event handling and implement an orbital camera controller to better view the chalet model.
-
----
-
-## Input Events
-
-### Rationale
-
-Whilst we could simply use GLFW directly in our application (as we did for the ESCAPE key listener) there are compelling reasons to introduce a layer of abstraction:
-
-* The GLFW API exposes some underlying details (such as window handle pointers) that we would prefer to hide if possible.
-
-* Some events are implemented by GLFW as callback handlers e.g. `MousePositionListener` and others as query functions, e.g. `glfwGetJoystickAxes`.
-
-* Several of the GLFW events are essentially equivalent (e.g. keyboard keys and mouse buttons) but are implemented using different listeners and API calls.
-
-* Traditional event callbacks violate the principle of separation of concerns by mixing application logic and the event handling code.
-
-Based on these observations we enumerate the following requirements for our design:
-
-* Map the various events to a smaller number of general types.
-
-* Abstract over the underlying GLFW listeners and API.
-
-* Separate the event handling framework from the application logic.
-
-* Provide a mechanism to map events to application logic that requires minimal configuration (or ideally none).
-
-### Analysis
-
-GLFW supports the following types of events:
-
-type                    | arguments                     | device
-----                    | ---------                     | ------
-keyboard                | key, action, modifiers        | keyboard
-mouse pointer           | x-y                           | mouse
-mouse button            | button, action, modifiers     | mouse
-mouse wheel             | value                         | mouse
-window enter/leave      | boolean                       | window
-window focus            | boolean                       | window
-controller / joystick   | x-y                           | controller
-controller button       | button, press/release         | controller
-controller axis         | axis, value                   | controller
-controller hat          | hat, direction                | controller
-
-Notes:
-
-* A _controller_ is defined here as a joystick, gamepad, console controller, etc.
-
-* There are several more but the above is enough to be getting on with.
-
-After a bit of analysis we determine that these events can be generalised to the following:
-
-type        | name      | parameterized | arguments     | examples                                          |
-----        | ----      | ------------- | ---------     | --------                                          |
-position    | no        | no            | x-y           | mouse pointer, controller                         |
-button      | yes       | yes           | n/a           | keyboard, mouse buttons, controller buttons       |
-axis        | yes       | no            | value         | mouse wheel, controller axis                      |
-boolean     | no        | no            | boolean       | window                                            |
-
-Where _name_ specifies whether the event has a specific name property and _parameterized_ indicates an event that has multiple values, e.g. mouse buttons.
-
-### Framework
-
-Based on the above we start with an abstraction for an event:
+An _event_ is a simple _marker_ interface with a convenience listener abstraction that handles events:
 
 ```java
 public interface Event {
     /**
-     * @return Source that generated this event
+     * An <i>event handler</i> processes events generated by a device.
+     * @param <E> Event type
      */
-    Source<?> source();
+    interface Handler<E extends Event> {
+        /**
+         * Handles the given event.
+         * @param event Event
+         */
+        void handle(E event);
+    }
 }
 ```
 
-An event _source_ is a binding point for a handler that consumes events generated by that source:
+Events are generated by _devices_ which can be bound to a handler to process the events:
 
 ```java
-interface Source<E extends Event> {
+public interface Device<E extends Event> {
     /**
-     * @return Name of this source
+     * @return Whether this device is currently bound to an event handler
      */
-    String name();
+    boolean isBound();
 
     /**
-     * Binds the given handler to this source.
+     * Binds an event handler to this device.
      * @param handler Event handler
-     * @return Underlying listener
+     * @return Underlying callback
+     * @throws IllegalStateException if this device is already bound
      */
-    Object bind(Consumer<E> handler);
+    Callback bind(Consumer<E> handler);
+
+    /**
+     * Removes the attached event handler.
+     * @throws IllegalArgumentException if this device is not bound
+     */
+    void remove();
 }
 ```
 
-Finally a _device_ exposes a number of event sources:
+## Device Template
+
+The various GLFW devices will be implemented by the following template:
 
 ```java
-interface Device {
-    /**
-     * @return Name of this device
-     */
-    String name();
-
-    /**
-     * @return Event sources
-     */
-    Set<Source<?>> sources();
-}
-```
-
-The purpose of this framework is to:
-
-* Generalise the definition of an input event.
-
-* Provide a platform-independant mechanism to bind events to a single handler abstraction defined as a simple consumer.
-
-* Allow an application to programatically enumerate the events that can be generated by a device.
-
-### Template Implementation
-
-An _axis_ is an input device that generates a ranged value, such as the mouse wheel or a HOTAS throttle.  As it turns out this is probably the simplest event case, we will implement an end-to-end solution for the mouse wheel axis.
-
-First we define a template implementation for a GLFW based device and event source:
-
-```java
-public abstract class DesktopDevice implements Device {
+abstract class AbstractWindowDevice<E extends Event, T extends Callback> implements Device<E> {
     private final Window window;
+    private T callback;
 
-    @Override
-    public void close() {
+    public boolean isBound() {
+        return Objects.nonNull(callback);
     }
 }
 ```
 
-A GLFW event source is an inner template:
+This class defines the following pair of methods that are used to manage the underlying GLFW callback:
 
 ```java
-public abstract class DesktopSource<T> implements Source {
-    @Override
-    public final void bind(Consumer<Event> handler) {
-        ...
+/**
+ * Creates the callback for the given window and event listener.
+ * @param window        Window
+ * @param listener      Event listener
+ * @return Callback
+ */
+protected abstract T callback(Window window, Consumer<E> listener);
+
+/**
+ * Provides the GLFW setter method for this device.
+ * @param library Device library
+ * @return Callback setter
+ */
+protected abstract BiConsumer<Window, T> method(DeviceLibrary library);
+```
+
+The `bind` method first invokes `callback` to create a GLFW callback instance:
+
+```java
+public T bind(Consumer<E> listener) {
+    if(isBound()) {
+        throw new IllegalStateException(...);
     }
 
-    /**
-     * Creates a listener that generates events and delegates to the given handler.
-     * @param handler Event handler
-     * @return New GLFW listener
-     */
-    protected abstract T listener(Consumer<Event> handler);
+    this.callback = callback(window, listener);
+    ...
 
-    /**
-     * Provides the registration method for the listener.
-     * @param lib GLFW library
-     * @return Listener registration method
-     */
-    protected abstract BiConsumer<Window, T> method(DesktopLibrary lib);
+    return callback;
 }
 ```
 
-Where `listener` creates a GLFW listener responsible for delegating events to a given handler and `method` is a provider for the GLFW registration method for that listener (similar to how Vulkan objects provide a destructor method):
-
-The process of binding an event handler to a GLFW-specific source is:
-
-1. Create a GLFW listener that delegates to the general event handler via the `listener` method.
-
-2. Retrieve the GLFW callback registration `method` for this listener.
-
-3. Invoke the callback method with the parent window and listener.
-
-This logic is implemented as follows:
+Which is then attached to the window by invoking the API method returned from `method`:
 
 ```java
-public final void bind(Consumer<Event> handler) {
-    // Retrieve listener registration method
-    DesktopLibrary lib = window.desktop().library();
-    BiConsumer<Window, T> method = method(lib);
+BiConsumer<Window, T> method = method((DeviceLibrary) window.library());
+method.accept(window, callback);
+```
 
-    // Register listener
-    if(handler == null) {
-        method.accept(window, null);
+The callback is detached similarly:
+
+```java
+public void remove() {
+    if(!isBound()) {
+        throw new IllegalStateException(...);
     }
-    else {
-        T listener = listener(handler);
-        method.accept(window, listener);
-        window.register(handler, listener);
+
+    BiConsumer<Window, T> method = method((DeviceLibrary) window.library());
+    method.accept(window, null);
+
+    this.callback = null;
+}
+```
+
+The `callback` is a mutable class member, both ensuring that only one callback is ever registered at any one time, and preventing listeners from being garbage collected, since they are otherwise out of scope after binding.  Note that GLFW automatically removes callbacks that are no longer active.
+
+---
+
+# Mouse Device
+
+## Mouse Wheel
+
+With a basic event handling framework in place we can now create specific implementations to support the basic GLFW devices, the mouse scroll wheel is probably the simplest device and is tackled first.
+
+Events generated by the mouse wheel are essentially a floating-point increment:
+
+```java
+public record AxisEvent(float value) implements Event {
+}
+```
+
+This event type will also be used later for other 'axis' devices such as a joystick throttle.
+
+The mouse wheel device specifies the type of event, the callback, and the API setter method:
+
+```java
+public class MouseWheel extends AbstractWindowDevice<AxisEvent, MouseListener> {
+    MouseWheel(Window window) {
+        super(window);
+    }
+
+    protected BiConsumer<Window, MouseListener> method(DeviceLibrary library) {
+        return library::glfwSetScrollCallback;
     }
 }
 ```
 
-Note that the binding is also registered to the window instance to prevent an active listener from being garbage collected and automatically de-registered by GLFW.
-
-### Axis
-
-An _axis_ is an event source with a companion class for the associated events:
+The `callback` is essentially an adapter that extracts the wheel increment (the Y value in this case) from the GLFW callback and delegates the event to the handler:
 
 ```java
-public interface AxisControl extends Source<AxisEvent> {
-    record AxisEvent(AxisControl axis, float value) implements Event {
-        @Override
-        public Object type() {
-            return axis;
+protected MouseListener callback(Window window, Consumer<AxisEvent> listener) {
+    return new MouseListener() {
+        public void event(MemorySegment window, double x, double y) {
+            listener.accept(new AxisEvent((int) y));
         }
-    }
+    };
 }
 ```
 
-We next create a GLFW device with an event source for the mouse-wheel:
+Finally the relevant API method and callback signature are defined in the GLFW library:
 
 ```java
-public class MouseDevice extends DesktopDevice {
-    private final MouseWheel wheel = new MouseWheel();
-
-    @Override
-    public Set<Source> sources() {
-        return Set.of(wheel);
-    }
-
-    public AxisControl wheel() {
-        return wheel;
-    }
-}
-```
-
-The mouse wheel is a GLFW axis event source:
-
-```java
-private class MouseWheel extends DesktopSource<MouseListener> implements AxisControl {
-    @Override
-    protected MouseListener listener(Consumer<Event> handler) {
-        return (ptr, x, y) -> {
-            AxisEvent e = new AxisEvent(this, (float) y);
-            handler.accept(e);
-        };
-    }
-
-    @Override
-    protected BiConsumer<Window, MouseListener> method(DesktopLibrary lib) {
-        return lib::glfwSetScrollCallback;
-    }
-}
-```
-
-Note that the `MouseListener` callback has X and Y arguments however both have the same value (we arbitrarily use one).
-
-The API methods and callback signatures are defined in the GLFW library:
-
-```java
-interface DesktopLibraryDevice {
-    /**
-     * Listener for mouse pointer and scroll wheel events.
-     */
+interface DeviceLibrary {
+    @FunctionalInterface
     interface MouseListener extends Callback {
         /**
          * Notifies a mouse event.
@@ -376,15 +302,8 @@ interface DesktopLibraryDevice {
          * @param x         X coordinate
          * @param y         Y coordinate
          */
-        void event(Pointer window, double x, double y);
+        void event(MemorySegment window, double x, double y);
     }
-
-    /**
-     * Registers a mouse movement listener.
-     * @param window        Window
-     * @param listener      Mouse movement listener
-     */
-    void glfwSetCursorPosCallback(Window window, MouseListener listener);
 
     /**
      * Registers a mouse scroll listener.
@@ -395,925 +314,90 @@ interface DesktopLibraryDevice {
 }
 ```
 
-Notes:
+## Mouse Pointer
 
-* The `MouseListener` callback is used for both the scroll wheel and mouse movement events since the signature is the same.
-
-* The mouse-wheel axis source is exposed for convenience.
-
-Finally we add the mouse device as a lazily instantiated member of the window:
+The second event category required by the mouse device is a _screen coordinate_ representing an X-Y window position:
 
 ```java
-public class Window {
-    private final Supplier<MouseDevice> mouse = new LazySupplier<>(() -> new MouseDevice(this));
-
-    public MouseDevice mouse() {
-        return mouse.get();
-    }
+public record ScreenCoordinate(int x, int y) implements Event {
 }
 ```
 
-### Position
-
-The next type of event is a _position_ that represents X-Y location events such as mouse pointer movement:
+The implementation of the pointer device follows the same pattern as above:
 
 ```java
-public record PositionEvent(Source source, float x, float y) implements Event {
-    @Override
-    public Object type() {
-        return source;
-    }
-}
-```
-
-The same framework as above is used to implement a position event source for the mouse pointer:
-
-```java
-private class MousePointer extends DesktopSource<MouseListener> {
-    @Override
-    protected MouseListener listener(Consumer<Event> handler) {
-        return (ptr, x, y) -> {
-            PositionEvent pos = new PositionEvent(this, (float) x, (float) y);
-            handler.accept(pos);
+public class MousePointer extends AbstractWindowDevice<ScreenCoordinate, MouseListener> {
+    protected MouseListener callback(Window window, Consumer<ScreenCoordinate> listener) {
+        return new MouseListener() {
+            @Override
+            public void event(MemorySegment window, double x, double y) {
+                var pos = new ScreenCoordinate((int) x, (int) y);
+                listener.accept(pos);
+            }
         };
     }
 
-    @Override
-    protected BiConsumer<Window, MouseListener> method(DesktopLibrary lib) {
-        return lib::glfwSetCursorPosCallback;
+    protected BiConsumer<Window, MouseListener> method(DeviceLibrary library) {
+        return library::glfwSetCursorPosCallback;
     }
 }
 ```
 
-Which is also added to the mouse device:
+Note that the same callback interface is used for both the mouse wheel and pointer since the signature is the same in both cases.
+
+## Integration
+
+The mouse devices are aggregated and added to the window class:
 
 ```java
-public class MouseDevice extends DesktopDevice {
-    ...
-    private final MousePointer ptr = new MousePointer();
-
-    @Override
-    public Set<Source> sources() {
-        return Set.of(ptr, wheel);
+public class Window extends AbstractNativeObject {
+    public record Mouse(MousePointer pointer, MouseWheel wheel) {
     }
 
-    public Position pointer() {
-        return ptr.pointer;
-    }
+    private final Mouse mouse = new Mouse(new MousePointer(this), new MouseWheel(this));
 }
 ```
 
-Note that the scroll wheel mouse pointer both use the same GLFW callback signature.
-
-### Buttons
-
-The final type of event (for now) is a _button_ that represents keyboard keys, mouse buttons, joystick hats, etc:
+The demo application can now attach listeners to dump events generated by these devices to the console:
 
 ```java
-public interface Button extends Event {
-    /**
-     * Button name delimiter.
-     */
-    String DELIMITER = "-";
-
-    /**
-     * @return Button identifier
-     */
-    String id();
-
-    /**
-     * @return Button name
-     */
-    String name();
-
-    /**
-     * @return Button action
-     */
-    Object action();
-    
-    /**
-     * Resolves this button to the given action.
-     * @param action Action
-     * @return Resolved button
-     */
-    Button resolve(int action);
-}
-```
-
-Which has the following skeleton implementation:
-
-```java
-abstract class AbstractButton implements Button {
-    protected final String id;
-
-    @Override
-    public final Object type() {
-        return this;
+@Configuration
+class Control {
+    @Autowired
+    void mouse(Window window) {
+        Mouse mouse = window.mouse();
+        mouse.pointer().bind(System.out::println);
+        mouse.wheel().bind(System.out::println);
     }
 }
 ```
 
-Notes:
-
-* A button also has an arbitrary _action_ object which is used below.
-
-* A button is also its own event type since it has no additional arguments (unlike the other types of event).
-
-* The purpose of the `resolve` method is explained later.
-
-A simple button is represented by the following concrete implementation:
-
-```java
-public class DefaultButton extends AbstractButton {
-    private final Action action;
-
-    public DefaultButton(String id) {
-        this(id, Action.PRESS);
-    }
-
-    protected DefaultButton(String id, Action action) {
-        super(id);
-        this.action = notNull(action);
-    }
-
-    @Override
-    public String name() {
-        return Button.name(id, action);
-    }
-
-    @Override
-    public Action action() {
-        return action;
-    }
-
-    @Override
-    public DefaultButton resolve(int action) {
-        return new DefaultButton(id, Action.map(action));
-    }
-}
-```
-
-Where _action_ is a simple enumeration (based on the GLFW action codes):
-
-```java
-public enum Action {
-    RELEASE,
-    PRESS,
-    REPEAT;
-
-    private static final Action[] ACTIONS = Action.values();
-
-    public static Action map(int action) {
-        return ACTIONS[action];
-    }
-}
-```
-
-The _name_ of the button is built using the following helper to construct a hyphen-delimited string representation of the button:
-
-```java
-public static String name(Object... tokens) {
-    return Arrays
-        .stream(tokens)
-        .map(String::valueOf)
-        .collect(joining(DELIMITER));
-}
-```
-
-Note that the overridden `action` accessor returns the `Action` enumeration constant rather than `Object`.
-
-Finally this class is extended for buttons with a keyboard modifiers mask:
-
-```java
-public class ModifiedButton extends DefaultButton {
-    private final int mods;
-
-    public ModifiedButton(String id) {
-        this(id, Action.PRESS, 0);
-    }
-
-    protected ModifiedButton(String id, Action action, int mods) {
-        super(id, action);
-        this.mods = mods;
-    }
-
-    @Override
-    public String name() {
-        if(mods == 0) {
-            return super.name();
-        }
-        else {
-            Set<Modifier> set = modifiers();
-            String str = Button.name(set.toArray());
-            return Button.name(super.name(), str);
-        }
-    }
-}
-```
-
-Where the modifiers is another enumeration (again using the GLFW values):
-
-```java
-public enum Modifier implements IntEnum {
-    SHIFT(0x0001),
-    CONTROL(0x0002),
-    ALT(0x0004),
-    SUPER(0x0008),
-    CAPS_LOCK(0x0010),
-    NUM_LOCK(0x0020)
-}
-```
-
-We also provide a convenience `resolve` variant for modified buttons:
-
-```java
-@Override
-public ModifiedButton resolve(int action) {
-    return resolve(action, mods);
-}
-
-/**
- * Helper - Resolves this button for the given action and keyboard modifiers mask.
- * @param action        Action code
- * @param mods          Keyboard modifiers mask
- * @return Resolved button
- */
-public ModifiedButton resolve(int action, int mods) {
-    return new ModifiedButton(id, Action.map(action), mods);
-}
-```
-
-The event source implementation for the mouse device first generates the list of buttons:
-
-```java
-private class MouseButton extends DesktopSource<MouseButtonListener> {
-    private final List<Button> buttons = IntStream
-        .rangeClosed(1, MouseInfo.getNumberOfButtons())
-        .mapToObj(id -> Button.name("Mouse", id))
-        .map(ModifiedButton::new)
-        .toList();
-}
-```
-
-Surprisingly GLFW does not seem to provide any means of determining the number of mouse buttons supported by the hardware, for the moment we use an AWT method.  However this means that we need to override the default Spring application behaviour which creates a _headless_ application by default (otherwise the AWT method throws an exception):
-
-```java
-new SpringApplicationBuilder(ModelDemo.class)
-    .headless(false)
-    .run(args);
-```
-
-The mouse buttons event source looks up a button by index and uses the `resolve` method to apply the action and keyboard modifiers:
-
-```java
-private class MouseButton extends DesktopSource<MouseButtonListener> {
-    private final List<ModifiedButton> buttons = ...
-
-    @Override
-    protected MouseButtonListener listener(Consumer<Event> handler) {
-        return (ptr, index, action, mods) -> {
-            ModifiedButton button = buttons.get(index);
-            Button event = button.resolve(action, mods);
-            handler.accept(event);
-        };
-    }
-
-    @Override
-    protected BiConsumer<Window, MouseButtonListener> method(DesktopLibrary lib) {
-        return lib::glfwSetMouseButtonCallback;
-    }
-}
-```
-
-The GLFW library is extended accordingly:
-
-```java
-interface MouseButtonListener extends Callback {
-    /**
-     * Notifies a mouse button event.
-     * @param window    window
-     * @param button    Button index 0..n
-     * @param action    Button action
-     * @param mods      Modifiers
-     */
-    void button(Pointer window, int button, int action, int mods);
-}
-
-/**
- * Registers a mouse button listener.
- * @param window        Window
- * @param listener      Mouse button listener
- */
-void glfwSetMouseButtonCallback(Window window, MouseButtonListener listener);
-```
-
-### Keyboard
-
-The final device we will implement in this chapter is the GLFW keyboard:
-
-```java
-public class KeyboardDevice extends DesktopDevice {
-    private final KeyboardSource keyboard = new KeyboardSource();
-
-    @Override
-    public Set<Source> sources() {
-        return Set.of(keyboard);
-    }
-}
-```
-
-The keyboard source caches button definitions:
-
-```java
-private class KeyboardSource extends DesktopSource<KeyListener> {
-    @Override
-    protected KeyListener listener(Consumer<Event> handler) {
-        return (ptr, key, scancode, action, mods) -> {
-            ModifiedButton base = keys.computeIfAbsent(key, this::key);
-            Button button = base.resolve(action, mods);
-            handler.accept(button);
-        };
-    }
-    
-    @Override
-    protected BiConsumer<Window, KeyListener> method(DesktopLibrary lib) {
-        return lib::glfwSetKeyCallback;
-    }
-}
-```
-
-Where new key definitions are created by the following helper:
-
-```java
-private ModifiedButton key(int code) {
-    return new ModifiedButton(table.name(code));
-}
-```
-
-The `table` maps GLFW key codes to key names specified by a resource file (loader not shown) which is a simple text file illustrated in the following fragment:
-
-```
-SPACE              32
-APOSTROPHE         39
-COMMA              44
-```
-
-Notes:
-
-* GLFW also provides a _scancode_ argument and the `glfwGetKeyName` API method but this functionality only seems to support a subset of the expected keys.
-
-* The key table is hidden but we provide a factory method to lookup keys by name.
-
-* We add the lazily-instantiated keyboard device to the GLFW window.
-
-Finally the GLFW library is extended to support the keyboard source:
-
-```java
-interface KeyListener extends Callback {
-    /**
-     * Notifies a key event.
-     * @param window            Window
-     * @param key               Key index
-     * @param scancode          Key scan code
-     * @param action            Key action
-     * @param mods              Modifiers
-     */
-    void key(Pointer window, int key, int scancode, int action, int mods);
-}
-
-/**
- * Registers a key listener.
- * @param window        Window
- * @param listener      Key listener
- */
-void glfwSetKeyCallback(Window window, KeyListener listener);
-```
-
----
-
-## Action Bindings
-
-### Overview
-
-Using this framework we could now bind event sources to an action handler, however there are still several problems:
-
-* Each type of event is a separate class so application code would be forced to cast events to access the sub-class properties.
-
-* Ideally we would prefer to bind _parameterized_ events rather than having to implement switching logic (especially for the keyboard).
-
-* Additionally we would also like to be able to bind directly to a method reference with an appropriate signature instead of hand-crafting adapters or messy lambdas.
-
-We _could_ refactor the event class to contain the properties for __all__ cases but this is pretty ugly (even if there are only a handful).  Alternatively we could implement some sort of double-dispatch to transform a base-class event to its sub-type but that also feels overkill in this case.
-
-Instead we will introduce an _action bindings_ class which is responsible for mapping events to handlers (or methods) and encapsulates any switching logic and type casting.
-
-### Bindings
-
-The action bindings is essentially a bi-directional mapping of events to/from handlers:
-
-```java
-public class ActionBindings implements Consumer<Event> {
-    private final Map<Object, Consumer<Event>> bindings = new HashMap<>();
-    private final Map<Consumer<? extends Event>, Set<Object>> handlers = new HashMap<>();
-}
-```
-
-Note that the bindings class is itself an event handler.
-
-The event `type` discriminator is used as the _key_ for the bindings mapping:
-
-```java
-@Override
-public void accept(Event e) {
-    Consumer<Event> handler = bindings.get(e.type());
-    if(handler != null) {
-        handler.accept(e);
-    }
-}
-```
-
-We add accessors to retrieve the handler for a given type of event:
-
-```java
-public Optional<Consumer<? extends Event>> binding(Object type) {
-    return Optional.ofNullable(bindings.get(type));
-}
-```
-
-And to retrieve the reverse mapping of event types for a given handler:
-
-```java
-public Stream<Object> bindings(Consumer<? extends Event> handler) {
-    return handlers.get(handler).stream();
-}
-```
-
-We also add support (not shown) to remove bindings by handler or event type and to clear all bindings.
-
-### Binding Support
-
-The following generic method binds an arbitrary event type to/from an event handler:
-
-```java
-private <T extends Event> void bindLocal(Object type, Consumer<? extends T> handler) {
-    // Lookup or create reverse mapping
-    Set<Object> types = handlers.computeIfAbsent(handler, ignored -> new HashSet<>());
-
-    // Add binding
-    @SuppressWarnings("unchecked")
-    Consumer<Event> consumer = (Consumer<Event>) handler;
-    bindings.put(type, consumer);
-    types.add(type);
-}
-```
-
-Note that this method is type-safe at compile-time but down-casts the handler to the base-class event.
-
-This helper is used to bind an arbitrary event _source_ to a handler:
-
-```java
-public <T extends Event> void bind(Source<T> src, Consumer<T> handler) {
-    bindLocal(src, handler);
-    src.bind(this);
-}
-```
-
-Note that we also automatically bind the event source to the bindings.
-
-Next we implement convenience methods to bind specific types of event to methods with the appropriate signature.
-
-Generally button events will either be bound to a simple `void` method without parameters:
-
-```java
-public void bind(Button button, Runnable handler) {
-    Consumer<Button> adapter = ignored -> handler.run();
-    bindLocal(button.type(), adapter);
-}
-```
-
-Or a handler that toggles some property:
-
-```java
-public void bind(Button button, Button.ToggleHandler handler) {
-    Consumer<Button> adapter = event -> handler.handle(event.action() == Action.PRESS);
-    bindLocal(button.type(), adapter);
-}
-```
-
-Where a _toggle handler_ is defined as follows in the `Button` class:
-
-```java
-@FunctionalInterface
-interface ToggleHandler {
-    void handle(boolean pressed);
-}
-```
-
-For position events we define the following functional interface:
-
-```java
-public class PositionEvent {
-    @FunctionalInterface
-    public interface Handler {
-        void handle(float x, float y);
-    }
-}
-```
-
-Which is used in a second bind variant for position events:
-
-```java
-public void bind(Source<PositionEvent> src, PositionEvent.Handler handler) {
-    Consumer<PositionEvent> adapter = pos -> handler.handle(pos.x(), pos.y());
-    bind(src, adapter);
-}
-```
-
-Finally we define a similar bind variant and handler abstraction for an axis event:
-
-```java
-interface Axis {
-    @FunctionalInterface
-    public interface Handler {
-        void handle(float value);
-    }
-}
-```
-
-### Modified Buttons
-
-The final piece of functionality in the bindings class is support for _button templates_ to implement event switching logic:
-
-1. Find the exact matching binding for a button event and its keyboard modifiers.
-
-2. Or find the binding that matches just the button (ignoring the modifiers).
-
-3. Otherwise ignore the event.
-
-This logic handles the cases for an event where the modifier mask is irrelevant (i.e. a _default_ button) or where bindings are present for both a default button __and__ a _modified button_ binding.
-
-Note that we assume that applications would not require matching by button action (i.e. the switching logic only applies to the keyboard modifiers) or would simply bind the entire keyboard device, e.g. for a text editor.
-
-To support button template the button interface is first modified with a match test:
-
-```java
-public interface Button extends Event {
-    /**
-     * Matches the given button against this template.
-     * @param button Button
-     * @return Whether matches this template
-     */
-    boolean matches(Button button);
-}
-```
-
-The skeleton implementation matches the button identifier:
-
-```java
-public boolean matches(Button button) {
-    return id.equals(button.id());
-}
-```
-
-And the default button also matches the action:
-
-```java
-public boolean matches(Button button) {
-    return super.matches(button) && action.equals(button.action());
-}
-```
-
-Finally the modified button implementation matches the keyboard modifiers mask:
-
-```java
-public boolean matches(Button button) {
-    return
-            super.matches(button) &&
-            (button instanceof ModifiedButton that) &&
-            MathsUtil.isMask(that.mods, this.mods);
-}
-```
-
-Note that this test matches the sub-set of the modifiers in the template.  For example, a button event with `SHIFT` and `CONTROL` modifiers is matched by a template with just `SHIFT`.
-
-In the bindings class the bind variants for buttons delegate to the following helper which applies the match test:
-
-```java
-private void bindButton(Button button, Consumer<Button> handler) {
-    final Consumer<Button> wrapper = event -> {
-        if(button.matches(event)) {
-            handler.accept(event);
-        }
-    };
-    bindLocal(button.type(), wrapper);
-}
-```
-
-Finally the `accept` method is modified to hand off to the second use-case for modified buttons:
-
-```java
-public void accept(Event e) {
-    final Consumer<Event> handler = bindings.get(e.type());
-    if(handler == null) {
-        if(e instanceof ModifiedButton mod) {
-            accept(mod);
-        }
-    }
-    else {
-        handler.accept(e);
-    }
-}
-```
-
-The new method invokes the _default_ button binding (if present) by essentially stripping the modifier mask:
-
-```java
-private void accept(ModifiedButton button) {
-    final Button def = new DefaultButton(button.id(), button.action());
-    final Consumer<Event> handler = bindings.get(def.type());
-    if(handler == null) {
-        return;
-    }
-    handler.accept(def);
-}
-```
-
-The new event handling framework and the action bindings class should satisfy the requirements we identified at the start of the chapter:
-
-* The GLFW specifics are now largely abstracted away (and theoretically could be replaced by an alternative implementation).
-
-* The event-handling logic is separated from the application code, e.g. binding the ESCAPE key to an arbitrary stop method.
-
-* Binding events to handlers or methods is relatively concise and does not require any casting or switching logic.
-
-There are still further use-cases that will be implemented in later chapters:
-
-* The remaining event types, e.g. window enter/leave.
-
-* Devices using GLFW query methods such as a joystick.
-
-* Multi-position buttons such as joystick hats and gamepad controllers.
-
-* A persistence mechanism for the action bindings.
-
----
-
-## Camera Controller
-
-### Default Controller
-
-The camera is a simple model class, to implement richer functionality a _camera controller_ is introduced that can be bound to input actions.
-
-A basic _free-look_ controller is first implemented that rotates the scene about the cameras position:
-
-```java
-public class DefaultCameraController {
-    private final Camera cam;
-    private final Dimensions dim;
-    
-    public void update(float x, float y) {
-        ...
-    }
-}
-```
-
-The `update` method accepts an X-Y coordinate relative to the specified viewport dimensions, i.e. the mouse pointer location.
-
-The view direction of the free-look camera is determined as follows:
-
-1. Map the coordinates to yaw-pitch angles.
-
-2. Calculate a point on the unit-sphere given these angles.
-
-3. Point the camera in the direction of the calculated point.
-
-To transform the coordinates to yaw-pitch angles the _interpolator_ class is introduced:
-
-```java
-@FunctionalInterface
-public interface Interpolator {
-    /**
-     * Applies this interpolator to the given value.
-     * @param value Value to be interpolated (assumes normalized)
-     * @return Interpolated value
-     */
-    float interpolate(float t);
-    
-    static Interpolator linear(float start, float end) {
-        float range = end - start;
-        return t -> lerp(start, range, t);
-    }
-
-    static float lerp(float start, float range, float value) {
-        return start + value * range;
-    }
-}
-```
-
-Two interpolator instances are added to the controller to transform in both directions:
-
-```java
-private final Interpolator horizontal = Interpolator.linear(0, TWO_PI);
-private final Interpolator vertical = Interpolator.linear(-HALF_PI, HALF_PI);
-```
-
-Notes:
-
-* The ranges of the interpolators are dependant on the algorithm to calculate the point on the unit-sphere (see below).
-
-* The interpolator ranges in future may need to be mutable, i.e. currently we assume the ranges are linearly interpolated across the entire viewport.
-
-* The interpolator class will be expanded with additional functionality in subsequent chapters.
-
-### Unit Sphere
-
-To determine the camera direction a new helper class is implemented to calculate a point on the unit-sphere given yaw-pitch angles:
-
-```java
-public final class Sphere {
-    /**
-     * Calculates the vector on the unit-sphere for the given rotation angles (in radians).
-     * @param theta     Horizontal angle (or <i>yaw</i>) in the range zero to {@link MathsUtil#TWO_PI}
-     * @param phi       Vertical angle (or <i>pitch</i>) in the range +/- {@link MathsUtil#HALF_PI}
-     * @return Unit-sphere vector
-     */
-    public static Vector vector(float theta, float phi) {
-        ...
-    }
-}
-```
-
-The implementation of the factory method is based on the standard algorithm for calculating a point on a sphere:
-
-```java
-float cos = cos(phi);
-float x = cos(theta) * cos;
-float y = sin(theta) * cos;
-float z = sin(phi);
-```
-
-However the _coordinate space_ of the generated points is not aligned with the Vulkan system:
-
-1. A horizontal (theta) angle of zero points in the direction of the X axis whereas we generally require the default to be the negative Z axis.
-
-2. The Y and Z axes are transposed, i.e. Z is _up_ in the default implementation of the algorithm.
-
-We assume that applications will always want to the resultant points in the default Vulkan space used elsewhere in JOVE, therefore we modify the default algorithm.
-
-To make the camera point in the negative Z direction the _theta_ is fiddled with a 90 degree clockwise 'rotation':
-
-```java
-float angle = theta - MathsUtil.HALF_PI;
-```
-
-The axes are transposed by a swizzle of the resultant coordinates:
-
-```java
-return new Vector(x, z, y);
-```
-
-Finally the camera is pointed at the calculated point on the sphere:
-
-```java
-public void update(float x, float y) {
-    float yaw = horizontal.interpolate(x / dim.width());
-    float pitch = vertical.interpolate(y / dim.height());
-    Vector vec = sphere.vector(yaw, pitch);
-    cam.direction(vec);
-}
-```
-
-### Orbital Controller
-
-An _orbital_ (or arcball) camera controller rotates the view position _about_ a target point-of-interest.
-
-The default controller is sub-classed to include a target position and _radius_ which is the distance from the camera:
-
-```java
-public class OrbitalCameraController extends DefaultCameraController {
-    private Point target = Point.ORIGIN;
-    private float radius = 1;
-
-    public OrbitalCameraController(Camera cam, Dimensions dim) {
-        super(cam, dim);
-        cam.look(target);
-    }
-}
-```
-
-The algorithm to calculate the position of the camera is the same as the default controller except for the final step, which is therefore factored out to a local helper which can then be over-ridden:
-
-```java
-public void update(float x, float y) {
-    ...
-    Vector vec = sphere.vector(yaw, pitch);
-    update(vec);
-}
-
-protected void update(Vector vec) {
-    cam.direction(vec);
-}
-```
-
-In the orbital implementation the camera is moved to the calculated point on the sphere and then pointed at the target:
-
-```java
-@Override
-protected void update(Vector vec) {
-    Point pos = new Point(vec).scale(radius).add(target);
-    cam.move(pos);
-    cam.direction(vec);
-}
-```
-
-The orbital controller provides mutators (not shown) to set the radius and target, and to clamp the radius to a min/max range (to prevent the camera being moved to the target position).
-
-The orbital camera can also be _zoomed_ towards or away from the target:
-
-```java
-public void zoom(float inc) {
-    radius = MathsUtil.clamp(radius - inc * scale, min, max);
-    Vector pos = cam.direction().multiply(radius);
-    cam.move(target.add(pos));
-}
-```
-
-And a `zoom` overload variant is added for an axis event.
-
-Note that the camera controllers will still be subject to gimbal locking at the extreme edges of the viewport (see the previous chapter).
-
-### Integration
-
-To integrate the new event framework and camera controller the following is added to the camera configuration class:
-
-```java
-public class CameraConfiguration {
-    private final Matrix projection;
-    private final Camera cam = new Camera();
-    private final OrbitalCameraController controller;
-
-    public CameraConfiguration(Swapchain swapchain) {
-        projection = Projection.DEFAULT.matrix(0.1f, 100, swapchain.extents());
-        controller = new OrbitalCameraController(cam, swapchain.extents());
-        controller.radius(3);
-        controller.scale(0.25f);
-    }
-}
-```
-
-Next we add a new component to instantiate the action bindings:
+Note that the application still depends on a GLFW polling loop running on the main thread to generate events:
 
 ```java
 @Bean
-public ActionBindings bindings(Window window, RenderLoop loop) {
-    ActionBindings bindings = new ActionBindings();
-    ...
-    bindings.init();
-    return bindings;
-}
-```
-
-The ESCAPE key is bound to the `stop` method of the render loop:
-
-```java
-KeyboardDevice keyboard = window.keyboard();
-bindings.bind(keyboard.key("ESCAPE"), loop::stop);
-keyboard.bind(bindings);
-```
-
-And the mouse pointer and wheel are bound to the relevant methods on the controller:
-
-```java
-MouseDevice mouse = window.mouse();
-bindings.bind(mouse.pointer(), controller::update);
-bindings.bind(mouse.wheel(), controller::zoom);
-```
-
-Finally the matrix bean is modified to apply the local rotation to the chalet model and to build the final projection matrix:
-
-```java
-@Bean
-public FrameListener matrix(ResourceBuffer uniform) {
-    Matrix x = Rotation.matrix(Axis.X, MathsUtil.toRadians(90));
-    Matrix y = Rotation.matrix(Axis.Y, MathsUtil.toRadians(-120));
-    Matrix model = y.multiply(x);
-
-    return (start, end) -> {
-        Matrix matrix = projection.multiply(cam.matrix()).multiply(model);
-        uniform.load(matrix);
+static CommandLineRunner poll(Desktop desktop) {
+    return _ -> {
+        while(true) {
+            desktop.poll();
+            Thread.sleep(50);
+        }
     };
 }
 ```
 
-We should now be able to use the mouse to look around the chalet model and zoom in using the scroll wheel.  Nice.
+---
+
+# Keyboard Device
+
 
 ---
 
 ## Summary
 
-In this chapter we implemented:
+This chapter covered the implementation of:
 
-* A generic input event framework that abstracts over the underlying GLFW implementation.
+* A simple event handling framework that abstracts over the underlying GLFW library.
 
 * The action bindings class that aids separation of concerns for input events and application action handlers.
 

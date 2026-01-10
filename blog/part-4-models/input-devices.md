@@ -73,10 +73,10 @@ To support GLFW callbacks the following new JOVE type and companion transformer 
 
 ```java
 public interface Callback {
-	class CallbackTransformerFactory implements Registry.Factory<Callback> {
-		private final Linker linker = Linker.nativeLinker();
-		private final Registry registry;
-	}
+    class CallbackTransformerFactory implements Registry.Factory<Callback> {
+        private final Linker linker = Linker.nativeLinker();
+        private final Registry registry;
+    }
 }
 ```
 
@@ -84,35 +84,35 @@ The transformer builds the _upcall stub_ for a given callback on demand:
 
 ```java
 public Transformer<Callback, MemorySegment> transformer(Class<? extends Callback> type) {
-	return new Transformer<>() {
-		private final Method method = method(type);
+    return new Transformer<>() {
+        private final Method method = method(type);
 
-		public MemorySegment marshal(Callback callback, SegmentAllocator allocator) {
-			return upcall(method, callback);
-		}
-	};
+        public MemorySegment marshal(Callback callback, SegmentAllocator allocator) {
+            return upcall(method, callback);
+        }
+    };
 }
 ```
 
-The `Callback` itself unfortunately cannot be declared a `@FunctionalInterface` (since it is essentially a _marker_ interface), therefore the following code validates that a given callback declares a _single_ method:
+The `Callback` interface itself unfortunately cannot be declared a `@FunctionalInterface` (since it is essentially a _marker_ interface), therefore the following code validates that a given callback declares a _single_ method:
 
 ```java
 private static Method method(Class<? extends Callback> callback) {
-	Method[] methods = callback.getDeclaredMethods();
-	if(methods.length != 1) {
-		throw new IllegalArgumentException(...);
-	}
-	return methods[0];
+    Method[] methods = callback.getDeclaredMethods();
+    if(methods.length != 1) {
+        throw new IllegalArgumentException(...);
+    }
+    return methods[0];
 }
 ```
 
-A method handle is reflected from the callback instance:
+The `upcall` method builds the FFM function descriptor for the callback and method handle is reflected from the callback instance:
 
 ```java
 MethodHandle handle = MethodHandles
-	.lookup()
-	.unreflect(method)
-	.bindTo(instance);
+    .lookup()
+    .unreflect(method)
+    .bindTo(instance);
 ```
 
 Which is then linked to the native library:
@@ -121,11 +121,9 @@ Which is then linked to the native library:
 return linker.upcallStub(handle, descriptor, Arena.global());
 ```
 
-Notes:
+Note that the stub is created using the global arena, otherwise the linker will fail.
 
-* The stub is created using the global arena, otherwise the linker will fail.
-
-* Callback stubs are generated on demand for each invocation of the `marshal` method.  This does not feel right but there is not really any  other way to interpret the FFM upcall API.
+> Callback stubs are generated on demand for each invocation of the `marshal` method.  This does not feel right but there is not really any  other way to interpret the FFM upcall API.
 
 For the moment callbacks are restricted to primitives and `MemorySegment` parameters.  Further analysis and design is required to determine how best to support domain types such as structures.  This might look a bit of a cop out, but GLFW only really requires primitive parameters (except for window handles which are unused anyway).  The only other callback is the diagnostic handler which is treated as a special case for the forseeable future.
 

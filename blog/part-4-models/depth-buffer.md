@@ -310,10 +310,15 @@ The existing view-transform code is replaced with a camera:
 class CameraSetup {
     @Bean
     static Camera camera() {
-        return new Camera();
+        var camera = new Camera();
+        camera.move(2);
+        camera.move(new Vector(0, 0.25f, 0));
+        return camera;
     }
 }
 ```
+
+The first `move` backs the camera away from the model and the second moves a little above 'ground level'.
 
 The previous VBO configuration is replaced with a new class that loads the persisted mesh:
 
@@ -410,8 +415,7 @@ The chalet model is orientated with the viewer looking down from above, therefor
 static Matrix modelmatrix() {
     Matrix tilt = new AxisAngle(Axis.X, toRadians(-90)).matrix();
     Matrix rotation = new AxisAngle(Axis.Y, toRadians(120)).matrix();
-    Matrix down = Matrix.translation(new Vector(0, -0.25f, 0));
-    return down.multiply(rotation.multiply(tilt));
+    return rotation.multiply(tilt);
 }
 ```
 
@@ -419,9 +423,7 @@ Where:
 
 * The _tilt_ orientates the model so the view is from the side.
 
-* The _rotation_ spins the model vertically such that the camera is facing the corner of the chalet with the door.
-
-* And _down_ essentially moves the camera slightly above the 'ground' level.
+* And _rotation_ spins the model vertically such that the camera is facing the corner of the chalet with the door.
 
 The model matrix is combined with the camera and projection matrices and written to the shader:
 

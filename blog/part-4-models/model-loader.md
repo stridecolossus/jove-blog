@@ -596,7 +596,7 @@ public static VkBufferUsageFlag map(VkDescriptorType type) {
 
 ### Index Data Type
 
-The `VkIndexType` specifies the size of the vertex indices of a given index (32-bits by default):
+The indices are stored as 32-bit integers in the mesh:
 
 ```java
 private class IntegerIndex implements Index {
@@ -616,7 +616,9 @@ private class IntegerIndex implements Index {
 }
 ```
 
-A new method on the index determines the smallest integer type required to support a given index:
+However Vulkan supports shorter data types to allow more compact index buffers for smaller meshes.
+
+A new method on the mesh index determines the smallest integer type required to support the index:
 
 ```java
 public final int minimumElementBytes() {
@@ -692,9 +694,54 @@ class ByteIndex extends IntegerIndex {
 }
 ```
 
-Validation is added to the index buffer class (not shown) to verify that a given index is supported by the hardware.
+A convenience helper is added to the index buffer class to map the data type accordingly:
 
-The index for the chalet model is quite large so the demo uses the default 32-bit indices.
+```java
+public static VkIndexType type(int size) {
+    return switch(size) {
+        case Byte.BYTES     -> VkIndexType.UINT8_EXT;
+        case Short.BYTES    -> VkIndexType.UINT16;
+        case Integer.BYTES  -> VkIndexType.UINT32;
+        default -> throw new IllegalArgumentException(...);
+    };
+}
+```
+
+Finally, validation is added to verify that a given index buffer is supported by the hardware:
+
+```
+private static void validate(VulkanBuffer buffer, VkIndexType type) {
+    var device = buffer.device();
+    switch(type) {
+        case UINT16 -> {
+            // A short index is always supported
+        }
+        ...
+    }
+}
+```
+
+An index comprising 8-bit values requires a specific device feature:
+
+```java
+case UINT8_EXT -> device.features().require(INDEX_TYPE_UINT8);
+```
+
+The size of a 32-bit index is limited by the device:
+
+```java
+case UINT32 -> {
+    int max = device.limits().get("maxDrawIndexedIndexValue");
+    if(max >= 0) {
+        long size = buffer.length() / Integer.BYTES;
+        if(size > max) {
+            throw new IllegalStateException(...);
+        }
+    }
+}
+```
+
+Note that the index for the chalet model is sufficiently large that the demo uses the default 32-bit indices.
 
 ### Model Persistence
 

@@ -709,7 +709,7 @@ public static VkIndexType type(int size) {
 
 Finally, validation is added to verify that a given index buffer is supported by the hardware:
 
-```
+```java
 private static void validate(VulkanBuffer buffer, VkIndexType type) {
     var device = buffer.device();
     switch(type) {
@@ -724,7 +724,7 @@ private static void validate(VulkanBuffer buffer, VkIndexType type) {
 An index comprising 8-bit values requires a specific device feature:
 
 ```java
-case UINT8_EXT -> device.features().require(INDEX_TYPE_UINT8);
+case UINT8_EXT -> device.features().require("indexTypeUint8");
 ```
 
 The size of a 32-bit index is limited by the device:
